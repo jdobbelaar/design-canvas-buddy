@@ -204,7 +204,7 @@ export function Canvas({ session }: Props) {
     (event.target as Element).setPointerCapture?.(event.pointerId);
     const point = toBoard(event.clientX, event.clientY);
 
-    if (event.button === 1 || event.altKey || event.shiftKey === false && tool === "select" && event.button === 2) {
+    if (event.button === 1 || event.button === 2 || event.altKey) {
       gestureRef.current = { mode: "pan", originClient: { x: event.clientX, y: event.clientY }, originView: { x: view.x, y: view.y } };
       return;
     }
