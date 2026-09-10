@@ -64,7 +64,7 @@ function Landing() {
             onSubmit={(event) => {
               event.preventDefault();
               const sessionId = joinId.trim().split("/").pop();
-              if (sessionId) void navigate({ to: "/session/$sessionId", params: { sessionId }, search: {} });
+              if (sessionId) void navigate({ to: "/session/$sessionId", params: { sessionId }, search: { host: undefined } });
             }}
           >
             <input
