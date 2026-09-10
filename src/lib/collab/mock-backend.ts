@@ -131,10 +131,11 @@ export class MockBackendClient implements BackendClient {
     switch (event.type) {
       case "join": {
         if (event.participant.id === myId) return;
+        const alreadyKnown = this.peers.has(event.participant.id);
         this.peers.set(event.participant.id, event.participant);
         this.emitPresence();
-        // Answer the newcomer with everything we know.
-        if (this.me) {
+        // Answer the newcomer once with everything we know.
+        if (this.me && !alreadyKnown) {
           this.channel?.post({ type: "join", sessionId: this.sessionId, participant: this.me });
           const objects = Object.values(this.doc);
           if (objects.length) {
