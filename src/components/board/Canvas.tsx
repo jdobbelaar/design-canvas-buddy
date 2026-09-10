@@ -355,9 +355,24 @@ export function Canvas({ session }: Props) {
     }
   };
 
-  const onPointerUp = () => {
+  const finishConnector = (targetId: string) => {
+    if (!pendingLink || pendingLink.fromId === targetId) return;
+    const connector = createConnector(pendingLink.fromId, targetId);
+    commit([{ op: "add", objects: [connector] }]);
+    setPendingLink(null);
+    setTool("select");
+  };
+
+  const onPointerUp = (event: React.PointerEvent) => {
     const gesture = gestureRef.current;
     gestureRef.current = null;
+
+    if (gesture?.mode === "connector") {
+      const hit = hitTest(toBoard(event.clientX, event.clientY));
+      if (hit && hit.type !== "connector") finishConnector(hit.id);
+      else setPendingLink(null);
+      return;
+    }
 
     if (gesture?.mode === "move" || gesture?.mode === "resize") {
       endInteraction();
@@ -378,14 +393,6 @@ export function Canvas({ session }: Props) {
       setSelection(expandSelection(hits, doc));
       setMarquee(null);
     }
-  };
-
-  const finishConnector = (targetId: string) => {
-    if (!pendingLink || pendingLink.fromId === targetId) return;
-    const connector = createConnector(pendingLink.fromId, targetId);
-    commit([{ op: "add", objects: [connector] }]);
-    setPendingLink(null);
-    setTool("select");
   };
 
   const onDoubleClick = (event: React.MouseEvent) => {
@@ -493,10 +500,7 @@ export function Canvas({ session }: Props) {
             .map((object) => {
               if (object.type === "shape") {
                 return (
-                  <g
-                    key={object.id}
-                    onPointerUp={() => tool === "connector" && finishConnector(object.id)}
-                  >
+                  <g key={object.id}>
                     <ShapeView shape={object} />
                   </g>
                 );

@@ -27,6 +27,7 @@ export function Minimap({ doc, viewport, me, peers, onNavigate }: Props) {
         width={MAP_WIDTH}
         height={MAP_HEIGHT}
         viewBox={`0 0 ${BOARD_WIDTH} ${BOARD_HEIGHT}`}
+        style={{ width: MAP_WIDTH, height: MAP_HEIGHT }}
         className="cursor-pointer rounded-[6px] bg-board-surface"
         role="img"
         onPointerDown={(event) => {
