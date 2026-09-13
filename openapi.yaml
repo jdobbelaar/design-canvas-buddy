@@ -1,0 +1,464 @@
+openapi: 3.0.3
+info:
+  title: System Design Interview — Collaboration Backend
+  version: 0.1.0
+  description: |
+    Backend contract expected by the frontend in `frontend/`.
+
+    **This is not a conventional REST API.** The frontend's real-time
+    collaboration layer (`frontend/src/lib/collab/types.ts`) is a
+    WebSocket message protocol, currently implemented in-browser by
+    `MockBackendClient` (`frontend/src/lib/collab/mock-backend.ts`) over a
+    `BroadcastChannel`, as a stand-in for a future FastAPI + WebSocket
+    backend. OpenAPI has no native syntax for WebSocket message exchanges,
+    so the WebSocket endpoint below is documented as a GET upgrade path
+    with its client→server and server→client message schemas defined in
+    `components.schemas` and cross-referenced in its description and the
+    `x-websocket-messages` extension.
+
+    **Authentication: none.** The app is intentionally link-based with no
+    accounts ("No accounts — Access is link-based. Both sides edit
+    equally."). No endpoint in this spec requires an `Authorization`
+    header, cookie, or token. A participant's role (`interviewer` vs
+    `candidate`) is decided client-side by a `host=1` query-string flag on
+    the session URL, not by any authenticated identity — the backend as
+    currently modeled by the frontend does not verify roles at all.
+
+servers:
+  - url: http://localhost:8000
+    description: Local FastAPI backend (expected, not yet implemented)
+
+tags:
+  - name: sessions
+    description: Session lifecycle (REST)
+  - name: collaboration
+    description: Real-time board sync (WebSocket)
+
+paths:
+  /sessions:
+    post:
+      tags: [sessions]
+      summary: Create a new collaboration session
+      description: |
+        Creates a new empty board session and returns its id, which the
+        frontend uses to build the shareable session link
+        (`/session/{sessionId}`). Corresponds to
+        `BackendClient.createSession()`.
+      security: []
+      requestBody:
+        required: false
+        description: No request body is sent by the frontend.
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSessionResponse"
+
+  /ws/{sessionId}:
+    get:
+      tags: [collaboration]
+      summary: Upgrade to a WebSocket for real-time board collaboration
+      description: |
+        Not a plain HTTP call — the client opens a WebSocket connection to
+        this path to join session `sessionId`. Once connected, the client
+        and server exchange the JSON messages defined by `ClientEvent` and
+        `ServerEvent` below. Corresponds to `BackendClient.connect()`,
+        `disconnect()`, `sendOps()`, `sendCursor()`, `sendViewport()`, and
+        `subscribe()`.
+
+        **Client → server messages** (`ClientEvent`, see
+        `#/components/schemas/ClientEvent`):
+        - `join` — sent immediately on connect with the local participant.
+        - `leave` — sent on disconnect.
+        - `ops` — board mutations (add/update/delete objects).
+        - `cursor` — local pointer position, or `null` when off-canvas.
+        - `viewport` — local pan/zoom viewport.
+
+        **Server → client messages** (`ServerEvent`, see
+        `#/components/schemas/ServerEvent`):
+        - `snapshot` — full board state + participant list, sent on join.
+        - `ops` — board mutations relayed from another participant.
+        - `presence` — updated participant list (join/leave/cursor/viewport
+          changes).
+      security: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Session id returned by `POST /sessions`.
+      responses:
+        "101":
+          description: Switching Protocols — connection upgraded to WebSocket.
+      x-websocket-messages:
+        sent-by-client: "#/components/schemas/ClientEvent"
+        sent-by-server: "#/components/schemas/ServerEvent"
+
+components:
+  schemas:
+    CreateSessionResponse:
+      type: object
+      required: [sessionId]
+      properties:
+        sessionId:
+          type: string
+          description: Newly created session id, used to build the share link.
+
+    Point:
+      type: object
+      required: [x, y]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+
+    Viewport:
+      type: object
+      required: [x, y, width, height]
+      properties:
+        x:
+          type: number
+        y:
+          type: number
+        width:
+          type: number
+        height:
+          type: number
+
+    ShapeKind:
+      type: string
+      enum: [box, database, queue, cloud, loadbalancer, decision, junction]
+
+    ObjectBase:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        groupId:
+          type: string
+          nullable: true
+          description: Objects sharing a groupId move together.
+
+    ShapeObject:
+      allOf:
+        - $ref: "#/components/schemas/ObjectBase"
+        - type: object
+          required: [type, kind, x, y, width, height, label]
+          properties:
+            type:
+              type: string
+              enum: [shape]
+            kind:
+              $ref: "#/components/schemas/ShapeKind"
+            x:
+              type: number
+            y:
+              type: number
+            width:
+              type: number
+            height:
+              type: number
+            label:
+              type: string
+
+    TextObject:
+      allOf:
+        - $ref: "#/components/schemas/ObjectBase"
+        - type: object
+          required: [type, x, y, text]
+          properties:
+            type:
+              type: string
+              enum: [text]
+            x:
+              type: number
+            y:
+              type: number
+            text:
+              type: string
+
+    DrawObject:
+      allOf:
+        - $ref: "#/components/schemas/ObjectBase"
+        - type: object
+          required: [type, points]
+          properties:
+            type:
+              type: string
+              enum: [draw]
+            points:
+              type: array
+              description: Absolute board-space points of a freehand stroke.
+              items:
+                $ref: "#/components/schemas/Point"
+
+    ConnectorEnd:
+      description: Either attached to an object, or a free-floating point.
+      oneOf:
+        - type: object
+          required: [objectId]
+          properties:
+            objectId:
+              type: string
+        - type: object
+          required: [point]
+          properties:
+            point:
+              $ref: "#/components/schemas/Point"
+
+    ConnectorObject:
+      allOf:
+        - $ref: "#/components/schemas/ObjectBase"
+        - type: object
+          required: [type, from, to, label]
+          properties:
+            type:
+              type: string
+              enum: [connector]
+            from:
+              $ref: "#/components/schemas/ConnectorEnd"
+            to:
+              $ref: "#/components/schemas/ConnectorEnd"
+            label:
+              type: string
+
+    BoardObject:
+      oneOf:
+        - $ref: "#/components/schemas/ShapeObject"
+        - $ref: "#/components/schemas/TextObject"
+        - $ref: "#/components/schemas/DrawObject"
+        - $ref: "#/components/schemas/ConnectorObject"
+      discriminator:
+        propertyName: type
+        mapping:
+          shape: "#/components/schemas/ShapeObject"
+          text: "#/components/schemas/TextObject"
+          draw: "#/components/schemas/DrawObject"
+          connector: "#/components/schemas/ConnectorObject"
+
+    BoardObjectPatch:
+      description: >-
+        Partial<BoardObject> — any subset of the fields of one of the
+        BoardObject variants (ShapeObject, TextObject, DrawObject,
+        ConnectorObject), all optional.
+      type: object
+      additionalProperties: true
+
+    BoardOpAdd:
+      type: object
+      required: [op, objects]
+      properties:
+        op:
+          type: string
+          enum: [add]
+        objects:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardObject"
+
+    BoardOpUpdate:
+      type: object
+      required: [op, updates]
+      properties:
+        op:
+          type: string
+          enum: [update]
+        updates:
+          type: array
+          items:
+            type: object
+            required: [id, patch]
+            properties:
+              id:
+                type: string
+              patch:
+                $ref: "#/components/schemas/BoardObjectPatch"
+
+    BoardOpDelete:
+      type: object
+      required: [op, ids]
+      properties:
+        op:
+          type: string
+          enum: [delete]
+        ids:
+          type: array
+          items:
+            type: string
+
+    BoardOp:
+      oneOf:
+        - $ref: "#/components/schemas/BoardOpAdd"
+        - $ref: "#/components/schemas/BoardOpUpdate"
+        - $ref: "#/components/schemas/BoardOpDelete"
+      discriminator:
+        propertyName: op
+        mapping:
+          add: "#/components/schemas/BoardOpAdd"
+          update: "#/components/schemas/BoardOpUpdate"
+          delete: "#/components/schemas/BoardOpDelete"
+
+    Participant:
+      type: object
+      required: [id, color, role]
+      properties:
+        id:
+          type: string
+        color:
+          type: string
+        role:
+          type: string
+          enum: [interviewer, candidate]
+        cursor:
+          $ref: "#/components/schemas/Point"
+          nullable: true
+        viewport:
+          $ref: "#/components/schemas/Viewport"
+          nullable: true
+
+    ClientEventJoin:
+      type: object
+      required: [type, sessionId, participant]
+      properties:
+        type:
+          type: string
+          enum: [join]
+        sessionId:
+          type: string
+        participant:
+          $ref: "#/components/schemas/Participant"
+
+    ClientEventLeave:
+      type: object
+      required: [type, sessionId, participantId]
+      properties:
+        type:
+          type: string
+          enum: [leave]
+        sessionId:
+          type: string
+        participantId:
+          type: string
+
+    ClientEventOps:
+      type: object
+      required: [type, sessionId, from, ops]
+      properties:
+        type:
+          type: string
+          enum: [ops]
+        sessionId:
+          type: string
+        from:
+          type: string
+          description: Participant id of the sender.
+        ops:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardOp"
+
+    ClientEventCursor:
+      type: object
+      required: [type, sessionId, from, cursor]
+      properties:
+        type:
+          type: string
+          enum: [cursor]
+        sessionId:
+          type: string
+        from:
+          type: string
+        cursor:
+          $ref: "#/components/schemas/Point"
+          nullable: true
+
+    ClientEventViewport:
+      type: object
+      required: [type, sessionId, from, viewport]
+      properties:
+        type:
+          type: string
+          enum: [viewport]
+        sessionId:
+          type: string
+        from:
+          type: string
+        viewport:
+          $ref: "#/components/schemas/Viewport"
+
+    ClientEvent:
+      description: Messages sent from client to server over the WebSocket.
+      oneOf:
+        - $ref: "#/components/schemas/ClientEventJoin"
+        - $ref: "#/components/schemas/ClientEventLeave"
+        - $ref: "#/components/schemas/ClientEventOps"
+        - $ref: "#/components/schemas/ClientEventCursor"
+        - $ref: "#/components/schemas/ClientEventViewport"
+      discriminator:
+        propertyName: type
+        mapping:
+          join: "#/components/schemas/ClientEventJoin"
+          leave: "#/components/schemas/ClientEventLeave"
+          ops: "#/components/schemas/ClientEventOps"
+          cursor: "#/components/schemas/ClientEventCursor"
+          viewport: "#/components/schemas/ClientEventViewport"
+
+    ServerEventSnapshot:
+      type: object
+      required: [type, objects, participants]
+      properties:
+        type:
+          type: string
+          enum: [snapshot]
+        objects:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardObject"
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Participant"
+
+    ServerEventOps:
+      type: object
+      required: [type, from, ops]
+      properties:
+        type:
+          type: string
+          enum: [ops]
+        from:
+          type: string
+        ops:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardOp"
+
+    ServerEventPresence:
+      type: object
+      required: [type, participants]
+      properties:
+        type:
+          type: string
+          enum: [presence]
+        participants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Participant"
+
+    ServerEvent:
+      description: Messages sent from server to client over the WebSocket.
+      oneOf:
+        - $ref: "#/components/schemas/ServerEventSnapshot"
+        - $ref: "#/components/schemas/ServerEventOps"
+        - $ref: "#/components/schemas/ServerEventPresence"
+      discriminator:
+        propertyName: type
+        mapping:
+          snapshot: "#/components/schemas/ServerEventSnapshot"
+          ops: "#/components/schemas/ServerEventOps"
+          presence: "#/components/schemas/ServerEventPresence"
