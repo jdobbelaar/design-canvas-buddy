@@ -110,6 +110,172 @@ function ellipseEdgeIntersection(rect: Rect, from: Point): Point {
   return { x: c.x + dx * scale, y: c.y + dy * scale };
 }
 
+/*
+ * The cloud shape is a lumpy, off-center blob (see cloudPathD below) — not
+ * an ellipse. An ellipse inscribed in its bounding box coincides with the
+ * box edge along the cardinal axes (same as a plain rectangle) and still
+ * cuts through empty space on the diagonals, so cardinal-angle connectors
+ * saw no improvement at all from ellipseEdgeIntersection. Instead, flatten
+ * the exact path used for rendering into a polygon and ray-cast against
+ * that, the same shape the user actually sees.
+ */
+
+interface ArcSegment {
+  rx: number;
+  ry: number;
+  to: Point;
+}
+
+/** The cloud shape's outline as a start point + a sequence of elliptical
+ * arcs (all with x-axis-rotation 0, large-arc-flag 0, sweep-flag 1) — the
+ * single source of truth ShapeView.tsx's rendered `d` string is built from
+ * too, via cloudPathD, so the two can never drift apart. */
+function cloudArcs(rect: Rect): { start: Point; segments: ArcSegment[] } {
+  const { x, y, width: w, height: h } = rect;
+  const start = { x: x + w * 0.22, y: y + h * 0.82 };
+  const p1 = { x: start.x - h * 0.03, y: start.y - h * 0.46 };
+  const p2 = { x: p1.x + w * 0.26, y: p1.y - h * 0.26 };
+  const p3 = { x: p2.x + w * 0.42, y: p2.y + h * 0.08 };
+  const p4 = { x: p3.x + w * 0.08, y: p3.y + h * 0.64 };
+  return {
+    start,
+    segments: [
+      { rx: h * 0.24, ry: h * 0.24, to: p1 },
+      { rx: h * 0.28, ry: h * 0.28, to: p2 },
+      { rx: h * 0.3, ry: h * 0.3, to: p3 },
+      { rx: h * 0.24, ry: h * 0.24, to: p4 },
+    ],
+  };
+}
+
+/** SVG path `d` for the cloud shape — shared with geometry so the visible
+ * outline and the connector-clipping outline can never drift apart. */
+export function cloudPathD(rect: Rect): string {
+  const { start, segments } = cloudArcs(rect);
+  const arcs = segments.map((s) => `A ${s.rx} ${s.ry} 0 0 1 ${s.to.x} ${s.to.y}`).join(" ");
+  return `M ${start.x} ${start.y} ${arcs} Z`;
+}
+
+/** Endpoint-to-center parameterization of one SVG elliptical arc (see the
+ * SVG spec's arc implementation notes), specialized for x-axis-rotation 0. */
+function arcCenterParams(p0: Point, rx: number, ry: number, sweep: boolean, p1: Point) {
+  const x1p = (p0.x - p1.x) / 2;
+  const y1p = (p0.y - p1.y) / 2;
+
+  let rxAbs = Math.abs(rx) || 1e-6;
+  let ryAbs = Math.abs(ry) || 1e-6;
+  const lambda = (x1p * x1p) / (rxAbs * rxAbs) + (y1p * y1p) / (ryAbs * ryAbs);
+  if (lambda > 1) {
+    const s = Math.sqrt(lambda);
+    rxAbs *= s;
+    ryAbs *= s;
+  }
+
+  // Per the SVG spec: sign is +1 when largeArc !== sweep, else -1. This
+  // shape's arcs are always largeArc=false, which simplifies that to:
+  const sign = sweep ? 1 : -1;
+  const num = Math.max(
+    0,
+    rxAbs * rxAbs * ryAbs * ryAbs - rxAbs * rxAbs * y1p * y1p - ryAbs * ryAbs * x1p * x1p,
+  );
+  const den = rxAbs * rxAbs * y1p * y1p + ryAbs * ryAbs * x1p * x1p;
+  const co = den === 0 ? 0 : sign * Math.sqrt(num / den);
+
+  const cxp = (co * (rxAbs * y1p)) / ryAbs;
+  const cyp = (-co * (ryAbs * x1p)) / rxAbs;
+  const cx = cxp + (p0.x + p1.x) / 2;
+  const cy = cyp + (p0.y + p1.y) / 2;
+
+  const vectorAngle = (ux: number, uy: number, vx: number, vy: number) => {
+    const len = Math.hypot(ux, uy) * Math.hypot(vx, vy) || 1e-9;
+    const dot = Math.max(-1, Math.min(1, (ux * vx + uy * vy) / len));
+    const a = Math.acos(dot);
+    return ux * vy - uy * vx < 0 ? -a : a;
+  };
+
+  const theta1 = vectorAngle(1, 0, (x1p - cxp) / rxAbs, (y1p - cyp) / ryAbs);
+  let dTheta = vectorAngle(
+    (x1p - cxp) / rxAbs,
+    (y1p - cyp) / ryAbs,
+    (-x1p - cxp) / rxAbs,
+    (-y1p - cyp) / ryAbs,
+  );
+  if (!sweep && dTheta > 0) dTheta -= 2 * Math.PI;
+  if (sweep && dTheta < 0) dTheta += 2 * Math.PI;
+
+  return { cx, cy, rx: rxAbs, ry: ryAbs, theta1, dTheta };
+}
+
+/** Sample points along one elliptical arc, from just after p0 through p1. */
+function sampleArc(
+  p0: Point,
+  rx: number,
+  ry: number,
+  sweep: boolean,
+  p1: Point,
+  segments: number,
+): Point[] {
+  const { cx, cy, rx: rxC, ry: ryC, theta1, dTheta } = arcCenterParams(p0, rx, ry, sweep, p1);
+  const points: Point[] = [];
+  for (let i = 1; i <= segments; i++) {
+    const theta = theta1 + (dTheta * i) / segments;
+    points.push({ x: cx + rxC * Math.cos(theta), y: cy + ryC * Math.sin(theta) });
+  }
+  return points;
+}
+
+/** Flatten the cloud outline into a closed polygon, in board space. */
+function cloudPolygon(rect: Rect, segmentsPerArc = 16): Point[] {
+  const { start, segments } = cloudArcs(rect);
+  const points: Point[] = [start];
+  let prev = start;
+  for (const seg of segments) {
+    points.push(...sampleArc(prev, seg.rx, seg.ry, true, seg.to, segmentsPerArc));
+    prev = seg.to;
+  }
+  return points;
+}
+
+function cross(ax: number, ay: number, bx: number, by: number): number {
+  return ax * by - ay * bx;
+}
+
+/** Where a ray from `origin` towards `towards` first exits `polygon`. */
+function polygonRayIntersection(polygon: Point[], origin: Point, towards: Point): Point {
+  const dx = towards.x - origin.x;
+  const dy = towards.y - origin.y;
+  if (dx === 0 && dy === 0) return origin;
+
+  let nearest = Infinity;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i]!;
+    const b = polygon[(i + 1) % polygon.length]!;
+    const sx = b.x - a.x;
+    const sy = b.y - a.y;
+    const denom = cross(dx, dy, sx, sy);
+    if (Math.abs(denom) < 1e-9) continue;
+    const ax = a.x - origin.x;
+    const ay = a.y - origin.y;
+    const t = cross(ax, ay, sx, sy) / denom;
+    const u = cross(ax, ay, dx, dy) / denom;
+    if (t >= 0 && u >= 0 && u <= 1 && t < nearest) nearest = t;
+  }
+  if (!Number.isFinite(nearest)) return origin;
+  return { x: origin.x + dx * nearest, y: origin.y + dy * nearest };
+}
+
+/** Where a line from `from` exits the cloud shape's actual rendered outline. */
+function cloudEdgeIntersection(rect: Rect, from: Point): Point {
+  const polygon = cloudPolygon(rect);
+  // Ray from the polygon's own centroid, not the bounding box's geometric
+  // center, since the cloud shape sits off-center within its box.
+  const origin = polygon.reduce(
+    (acc, p) => ({ x: acc.x + p.x / polygon.length, y: acc.y + p.y / polygon.length }),
+    { x: 0, y: 0 },
+  );
+  return polygonRayIntersection(polygon, origin, from);
+}
+
 /** Where a line from `from` exits the diamond inscribed in `rect`. */
 function diamondEdgeIntersection(rect: Rect, from: Point): Point {
   const c = centerOf(rect);
@@ -130,7 +296,8 @@ function diamondEdgeIntersection(rect: Rect, from: Point): Point {
  * and disappearing under it.
  */
 export function edgeIntersection(rect: Rect, from: Point, kind?: ShapeKind): Point {
-  if (kind === "cloud" || kind === "junction") return ellipseEdgeIntersection(rect, from);
+  if (kind === "cloud") return cloudEdgeIntersection(rect, from);
+  if (kind === "junction") return ellipseEdgeIntersection(rect, from);
   if (kind === "decision") return diamondEdgeIntersection(rect, from);
   return rectEdgeIntersection(rect, from);
 }

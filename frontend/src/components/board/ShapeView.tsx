@@ -1,4 +1,5 @@
 import type { ShapeObject } from "@/lib/collab/types";
+import { cloudPathD } from "@/lib/board/geometry";
 
 interface Props {
   shape: ShapeObject;
@@ -38,16 +39,7 @@ export function ShapeView({ shape }: Props) {
       </g>
     );
   } else if (kind === "cloud") {
-    body = (
-      <path
-        {...common}
-        d={`M ${x + w * 0.22} ${y + h * 0.82}
-            a ${h * 0.24} ${h * 0.24} 0 0 1 ${-h * 0.03} ${-h * 0.46}
-            a ${h * 0.28} ${h * 0.28} 0 0 1 ${w * 0.26} ${-h * 0.26}
-            a ${h * 0.3} ${h * 0.3} 0 0 1 ${w * 0.42} ${h * 0.08}
-            a ${h * 0.24} ${h * 0.24} 0 0 1 ${w * 0.08} ${h * 0.64} Z`}
-      />
-    );
+    body = <path {...common} d={cloudPathD({ x, y, width: w, height: h })} />;
   } else if (kind === "loadbalancer") {
     body = (
       <g {...common}>

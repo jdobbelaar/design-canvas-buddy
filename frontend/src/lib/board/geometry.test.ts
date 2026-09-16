@@ -87,23 +87,30 @@ describe("connectors", () => {
     expect(end).toEqual({ x: 0, y: 0 });
   });
 
-  it("hugs a cloud/junction shape's rounded silhouette, not its bounding box corner", () => {
-    // A rectangle-based clip would put this at the box corner (100,100).
-    // The visible cloud/circle doesn't reach the corner, so a diagonal
-    // approach must land closer in, or the arrowhead disappears under it.
-    const withCloud = applyOps(doc, [
-      { op: "update", updates: [{ id: "b", patch: { kind: "cloud" } }] },
+  it("hugs a cloud shape's actual rendered outline, not its bounding box", () => {
+    const cloud = applyOps(doc, [
+      {
+        op: "update",
+        updates: [{ id: "b", patch: { kind: "cloud", x: 0, y: 0, width: 100, height: 100 } }],
+      },
     ]);
-    const { end } = connectorGeometry(
-      { point: { x: 1000, y: 1000 } },
-      { objectId: "b" },
-      applyOps(withCloud, [{ op: "update", updates: [{ id: "b", patch: { x: 0, y: 0 } }] }]),
-    );
-    const corner = { x: 100, y: 100 };
-    const distToCorner = Math.hypot(end.x - corner.x, end.y - corner.y);
+
+    // Approaching from directly above (a cardinal angle): an ellipse or
+    // rectangle inscribed in the box both land exactly on the box's top
+    // edge (y=0). The cloud's outline sits well below that.
+    const fromAbove = connectorGeometry({ point: { x: 50, y: -1000 } }, { objectId: "b" }, cloud);
+    expect(fromAbove.end.y).toBeGreaterThan(5);
+    expect(fromAbove.end.y).toBeLessThan(50);
+
+    // Approaching from the diagonal: a rectangle clip lands exactly on the
+    // box corner (100,100); the cloud's outline doesn't reach the corner.
+    const fromCorner = connectorGeometry({ point: { x: 1000, y: 1000 } }, { objectId: "b" }, cloud);
+    const distToCorner = Math.hypot(fromCorner.end.x - 100, fromCorner.end.y - 100);
     expect(distToCorner).toBeGreaterThan(10);
-    expect(end.x).toBeCloseTo(50 + 50 / Math.SQRT2);
-    expect(end.y).toBeCloseTo(50 + 50 / Math.SQRT2);
+    expect(fromCorner.end.x).toBeGreaterThan(50);
+    expect(fromCorner.end.x).toBeLessThan(100);
+    expect(fromCorner.end.y).toBeGreaterThan(50);
+    expect(fromCorner.end.y).toBeLessThan(100);
   });
 
   it("hugs a decision (diamond) shape's angled edge, not its bounding box corner", () => {
