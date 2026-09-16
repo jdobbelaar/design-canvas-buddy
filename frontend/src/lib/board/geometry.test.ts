@@ -86,6 +86,40 @@ describe("connectors", () => {
     const { end } = connectorGeometry({ objectId: "a" }, { objectId: "b" }, pruned);
     expect(end).toEqual({ x: 0, y: 0 });
   });
+
+  it("hugs a cloud/junction shape's rounded silhouette, not its bounding box corner", () => {
+    // A rectangle-based clip would put this at the box corner (100,100).
+    // The visible cloud/circle doesn't reach the corner, so a diagonal
+    // approach must land closer in, or the arrowhead disappears under it.
+    const withCloud = applyOps(doc, [
+      { op: "update", updates: [{ id: "b", patch: { kind: "cloud" } }] },
+    ]);
+    const { end } = connectorGeometry(
+      { point: { x: 1000, y: 1000 } },
+      { objectId: "b" },
+      applyOps(withCloud, [{ op: "update", updates: [{ id: "b", patch: { x: 0, y: 0 } }] }]),
+    );
+    const corner = { x: 100, y: 100 };
+    const distToCorner = Math.hypot(end.x - corner.x, end.y - corner.y);
+    expect(distToCorner).toBeGreaterThan(10);
+    expect(end.x).toBeCloseTo(50 + 50 / Math.SQRT2);
+    expect(end.y).toBeCloseTo(50 + 50 / Math.SQRT2);
+  });
+
+  it("hugs a decision (diamond) shape's angled edge, not its bounding box corner", () => {
+    const withDecision = applyOps(doc, [
+      { op: "update", updates: [{ id: "b", patch: { kind: "decision", x: 0, y: 0 } }] },
+    ]);
+    const { end } = connectorGeometry(
+      { point: { x: 1000, y: 1000 } },
+      { objectId: "b" },
+      withDecision,
+    );
+    // Diamond boundary at a 45-degree approach is even further inset than
+    // the ellipse case above: |dx|/hw + |dy|/hh = 1 with dx = dy.
+    expect(end.x).toBeCloseTo(75);
+    expect(end.y).toBeCloseTo(75);
+  });
 });
 
 describe("selection helpers", () => {

@@ -1,4 +1,4 @@
-import type { BoardDoc, BoardObject, ConnectorEnd, Point } from "../collab/types";
+import type { BoardDoc, BoardObject, ConnectorEnd, Point, ShapeKind } from "../collab/types";
 
 export interface Rect {
   x: number;
@@ -87,7 +87,7 @@ export function endPoint(end: ConnectorEnd, doc: BoardDoc): Point {
  * Where a line from `from` towards `to` exits the rectangle around `to`'s
  * owner. This is what makes attached connectors re-route when shapes move.
  */
-export function edgeIntersection(rect: Rect, from: Point): Point {
+function rectEdgeIntersection(rect: Rect, from: Point): Point {
   const c = centerOf(rect);
   const dx = from.x - c.x;
   const dy = from.y - c.y;
@@ -96,6 +96,43 @@ export function edgeIntersection(rect: Rect, from: Point): Point {
   const hh = rect.height / 2;
   const scale = Math.min(hw / Math.abs(dx || 1e-6), hh / Math.abs(dy || 1e-6));
   return { x: c.x + dx * scale, y: c.y + dy * scale };
+}
+
+/** Where a line from `from` exits the ellipse inscribed in `rect`. */
+function ellipseEdgeIntersection(rect: Rect, from: Point): Point {
+  const c = centerOf(rect);
+  const dx = from.x - c.x;
+  const dy = from.y - c.y;
+  if (dx === 0 && dy === 0) return c;
+  const hw = rect.width / 2 || 1e-6;
+  const hh = rect.height / 2 || 1e-6;
+  const scale = 1 / Math.hypot(dx / hw, dy / hh);
+  return { x: c.x + dx * scale, y: c.y + dy * scale };
+}
+
+/** Where a line from `from` exits the diamond inscribed in `rect`. */
+function diamondEdgeIntersection(rect: Rect, from: Point): Point {
+  const c = centerOf(rect);
+  const dx = from.x - c.x;
+  const dy = from.y - c.y;
+  if (dx === 0 && dy === 0) return c;
+  const hw = rect.width / 2 || 1e-6;
+  const hh = rect.height / 2 || 1e-6;
+  const scale = 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh);
+  return { x: c.x + dx * scale, y: c.y + dy * scale };
+}
+
+/**
+ * Connector endpoints should hug a shape's actual rendered silhouette, not
+ * its bounding box — a rectangle formula overshoots round/pointed shapes
+ * (cloud, junction, decision), leaving the arrowhead either floating well
+ * off the visible edge or, at steep angles, landing back inside the shape
+ * and disappearing under it.
+ */
+export function edgeIntersection(rect: Rect, from: Point, kind?: ShapeKind): Point {
+  if (kind === "cloud" || kind === "junction") return ellipseEdgeIntersection(rect, from);
+  if (kind === "decision") return diamondEdgeIntersection(rect, from);
+  return rectEdgeIntersection(rect, from);
 }
 
 /** Final rendered [start, end] of a connector, clipped to attached shapes. */
@@ -110,12 +147,12 @@ export function connectorGeometry(
   if ("objectId" in from) {
     const o = doc[from.objectId];
     const r = o && boundsOf(o, doc);
-    if (r) start = edgeIntersection(r, end);
+    if (r) start = edgeIntersection(r, end, o?.type === "shape" ? o.kind : undefined);
   }
   if ("objectId" in to) {
     const o = doc[to.objectId];
     const r = o && boundsOf(o, doc);
-    if (r) end = edgeIntersection(r, start);
+    if (r) end = edgeIntersection(r, start, o?.type === "shape" ? o.kind : undefined);
   }
   return { start, end };
 }
