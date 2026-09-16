@@ -456,7 +456,7 @@ export function Canvas({ session }: Props) {
   };
 
   const onWheel = (event: React.WheelEvent) => {
-    if (!event.ctrlKey && !event.metaKey) {
+    if (!event.altKey) {
       setView((v) => ({
         ...v,
         x: clamp(v.x + event.deltaX / v.zoom, 0, BOARD_WIDTH - size.width / v.zoom),
@@ -720,7 +720,7 @@ export function Canvas({ session }: Props) {
           +
         </button>
         <span className="h-3 w-px bg-border" />
-        <span>Alt-drag to pan · Ctrl-scroll to zoom</span>
+        <span>Alt-drag to pan · Alt-scroll to zoom</span>
       </div>
     </div>
   );
