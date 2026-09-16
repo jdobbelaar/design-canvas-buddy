@@ -276,6 +276,75 @@ function cloudEdgeIntersection(rect: Rect, from: Point): Point {
   return polygonRayIntersection(polygon, origin, from);
 }
 
+/**
+ * Corner radii for the rounded-rectangle shapes — shared with ShapeView.tsx
+ * so the rendered `rx` and the connector-clipping outline can't drift apart.
+ */
+export const ROUNDED_RECT_RADIUS: Partial<Record<ShapeKind, number>> = {
+  box: 10,
+  loadbalancer: 10,
+  queue: 6,
+};
+
+/** Flatten a rounded rectangle's outline into a closed polygon. */
+function roundedRectPolygon(rect: Rect, radius: number, segmentsPerCorner = 8): Point[] {
+  const r = Math.max(0, Math.min(radius, rect.width / 2, rect.height / 2));
+  const { x, y, width: w, height: h } = rect;
+  if (r < 1e-6) {
+    return [
+      { x, y },
+      { x: x + w, y },
+      { x: x + w, y: y + h },
+      { x, y: y + h },
+    ];
+  }
+  // Each corner is a quarter circle; the straight edges between them are
+  // implicit -- polygonRayIntersection treats every consecutive pair of
+  // points (including across corners) as an edge.
+  const corners = [
+    { cx: x + w - r, cy: y + r, from: -Math.PI / 2, to: 0 }, // top-right
+    { cx: x + w - r, cy: y + h - r, from: 0, to: Math.PI / 2 }, // bottom-right
+    { cx: x + r, cy: y + h - r, from: Math.PI / 2, to: Math.PI }, // bottom-left
+    { cx: x + r, cy: y + r, from: Math.PI, to: (3 * Math.PI) / 2 }, // top-left
+  ];
+  const points: Point[] = [];
+  for (const c of corners) {
+    for (let i = 0; i <= segmentsPerCorner; i++) {
+      const theta = c.from + ((c.to - c.from) * i) / segmentsPerCorner;
+      points.push({ x: c.cx + r * Math.cos(theta), y: c.cy + r * Math.sin(theta) });
+    }
+  }
+  return points;
+}
+
+function roundedRectEdgeIntersection(rect: Rect, from: Point, radius: number): Point {
+  return polygonRayIntersection(roundedRectPolygon(rect, radius), centerOf(rect), from);
+}
+
+/** The database shape's cap radius — shared with ShapeView.tsx. */
+export function databaseCapRadius(height: number): number {
+  return Math.min(18, height / 5);
+}
+
+/** Flatten the database (cylinder) shape's outline into a closed polygon. */
+function databasePolygon(rect: Rect, segments = 16): Point[] {
+  const { x, y, width: w, height: h } = rect;
+  const ry = databaseCapRadius(h);
+  const topLeft = { x, y: y + ry };
+  const topRight = { x: x + w, y: y + ry };
+  const bottomRight = { x: x + w, y: y + h - ry };
+  const bottomLeft = { x, y: y + h - ry };
+  return [
+    topLeft,
+    ...sampleArc(topLeft, w / 2, ry, true, topRight, segments),
+    ...sampleArc(bottomRight, w / 2, ry, true, bottomLeft, segments),
+  ];
+}
+
+function databaseEdgeIntersection(rect: Rect, from: Point): Point {
+  return polygonRayIntersection(databasePolygon(rect), centerOf(rect), from);
+}
+
 /** Where a line from `from` exits the diamond inscribed in `rect`. */
 function diamondEdgeIntersection(rect: Rect, from: Point): Point {
   const c = centerOf(rect);
@@ -297,8 +366,11 @@ function diamondEdgeIntersection(rect: Rect, from: Point): Point {
  */
 export function edgeIntersection(rect: Rect, from: Point, kind?: ShapeKind): Point {
   if (kind === "cloud") return cloudEdgeIntersection(rect, from);
+  if (kind === "database") return databaseEdgeIntersection(rect, from);
   if (kind === "junction") return ellipseEdgeIntersection(rect, from);
   if (kind === "decision") return diamondEdgeIntersection(rect, from);
+  const radius = kind && ROUNDED_RECT_RADIUS[kind];
+  if (radius) return roundedRectEdgeIntersection(rect, from, radius);
   return rectEdgeIntersection(rect, from);
 }
 

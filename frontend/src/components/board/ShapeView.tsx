@@ -1,5 +1,5 @@
 import type { ShapeObject } from "@/lib/collab/types";
-import { cloudPathD } from "@/lib/board/geometry";
+import { ROUNDED_RECT_RADIUS, cloudPathD, databaseCapRadius } from "@/lib/board/geometry";
 
 interface Props {
   shape: ShapeObject;
@@ -18,9 +18,9 @@ export function ShapeView({ shape }: Props) {
   let body: React.ReactNode = null;
 
   if (kind === "box") {
-    body = <rect x={x} y={y} width={w} height={h} rx={10} {...common} />;
+    body = <rect x={x} y={y} width={w} height={h} rx={ROUNDED_RECT_RADIUS.box} {...common} />;
   } else if (kind === "database") {
-    const ry = Math.min(18, h / 5);
+    const ry = databaseCapRadius(h);
     body = (
       <g {...common}>
         <path
@@ -32,7 +32,7 @@ export function ShapeView({ shape }: Props) {
   } else if (kind === "queue") {
     body = (
       <g {...common}>
-        <rect x={x} y={y} width={w} height={h} rx={6} />
+        <rect x={x} y={y} width={w} height={h} rx={ROUNDED_RECT_RADIUS.queue} />
         {[0.33, 0.66].map((t) => (
           <line key={t} x1={x + w * t} y1={y} x2={x + w * t} y2={y + h} />
         ))}
@@ -43,7 +43,14 @@ export function ShapeView({ shape }: Props) {
   } else if (kind === "loadbalancer") {
     body = (
       <g {...common}>
-        <rect x={x} y={y} width={w} height={h} rx={10} fill="var(--shape-fill-alt)" />
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          rx={ROUNDED_RECT_RADIUS.loadbalancer}
+          fill="var(--shape-fill-alt)"
+        />
         <path
           d={`M ${x + w * 0.2} ${y + h / 2} H ${x + w * 0.45}
               M ${x + w * 0.45} ${y + h / 2} L ${x + w * 0.78} ${y + h * 0.28}

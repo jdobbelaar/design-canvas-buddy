@@ -127,6 +127,48 @@ describe("connectors", () => {
     expect(end.x).toBeCloseTo(75);
     expect(end.y).toBeCloseTo(75);
   });
+
+  it("hugs a box shape's rounded corner, not its bounding box corner", () => {
+    // "b" is kind "box" with corner radius 10 (see ROUNDED_RECT_RADIUS).
+    // Repositioned to (0,0)/100x100 so a 45-degree approach hits the
+    // corner's quarter circle (centered at (90,90), r=10) at
+    // 90 + 10/sqrt(2) on each axis, not the box's sharp corner at (100,100).
+    const repositioned = applyOps(doc, [
+      { op: "update", updates: [{ id: "b", patch: { x: 0, y: 0, width: 100, height: 100 } }] },
+    ]);
+    const { end } = connectorGeometry(
+      { point: { x: 1000, y: 1000 } },
+      { objectId: "b" },
+      repositioned,
+    );
+    const expected = 90 + 10 / Math.SQRT2;
+    expect(end.x).toBeCloseTo(expected, 1);
+    expect(end.y).toBeCloseTo(expected, 1);
+    expect(end.x).toBeLessThan(100);
+    expect(end.y).toBeLessThan(100);
+  });
+
+  it("hugs a database shape's curved cap, not its bounding box corner", () => {
+    const database = applyOps(doc, [
+      {
+        op: "update",
+        updates: [{ id: "b", patch: { kind: "database", x: 0, y: 0, width: 100, height: 100 } }],
+      },
+    ]);
+    // Approaching from up and to the right hits the flank of the top cap's
+    // ellipse, well inset from the box's sharp corner at (100,0).
+    const { end } = connectorGeometry(
+      { point: { x: 1000, y: -1000 } },
+      { objectId: "b" },
+      database,
+    );
+    const distToCorner = Math.hypot(end.x - 100, end.y - 0);
+    expect(distToCorner).toBeGreaterThan(5);
+    expect(end.x).toBeGreaterThan(50);
+    expect(end.x).toBeLessThan(100);
+    expect(end.y).toBeGreaterThanOrEqual(0);
+    expect(end.y).toBeLessThan(50);
+  });
 });
 
 describe("selection helpers", () => {
