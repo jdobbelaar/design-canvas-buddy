@@ -169,6 +169,22 @@ describe("connectors", () => {
     expect(end.y).toBeGreaterThanOrEqual(0);
     expect(end.y).toBeLessThan(50);
   });
+
+  it("hugs a junction shape's actual circle, not an ellipse, once resized non-uniformly", () => {
+    // junction renders as <circle r={min(w,h)/2}>, not an ellipse filling
+    // the box. At 200x100, that's a circle of radius 50 centered at
+    // (100,50) -- an ellipse formula would (wrongly) reach all the way to
+    // the box edge at a cardinal approach, i.e. 100 away, not 50.
+    const junction = applyOps(doc, [
+      {
+        op: "update",
+        updates: [{ id: "b", patch: { kind: "junction", x: 0, y: 0, width: 200, height: 100 } }],
+      },
+    ]);
+    const { end } = connectorGeometry({ point: { x: 1000, y: 50 } }, { objectId: "b" }, junction);
+    expect(end.x).toBeCloseTo(150); // center.x (100) + radius (50)
+    expect(end.y).toBeCloseTo(50);
+  });
 });
 
 describe("selection helpers", () => {

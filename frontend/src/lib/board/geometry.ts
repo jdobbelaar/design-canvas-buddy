@@ -98,15 +98,20 @@ function rectEdgeIntersection(rect: Rect, from: Point): Point {
   return { x: c.x + dx * scale, y: c.y + dy * scale };
 }
 
-/** Where a line from `from` exits the ellipse inscribed in `rect`. */
-function ellipseEdgeIntersection(rect: Rect, from: Point): Point {
+/**
+ * Where a line from `from` exits the circle inscribed in `rect`. The
+ * junction shape renders as an actual <circle r={min(w,h)/2}>, not an
+ * ellipse filling the box, so this must use the smaller dimension for both
+ * axes — an ellipse formula only happens to match when the shape is square,
+ * and drifts apart (leaving a gap) once it's resized non-uniformly.
+ */
+function circleEdgeIntersection(rect: Rect, from: Point): Point {
   const c = centerOf(rect);
   const dx = from.x - c.x;
   const dy = from.y - c.y;
   if (dx === 0 && dy === 0) return c;
-  const hw = rect.width / 2 || 1e-6;
-  const hh = rect.height / 2 || 1e-6;
-  const scale = 1 / Math.hypot(dx / hw, dy / hh);
+  const r = Math.min(rect.width, rect.height) / 2 || 1e-6;
+  const scale = r / Math.hypot(dx, dy);
   return { x: c.x + dx * scale, y: c.y + dy * scale };
 }
 
@@ -115,9 +120,9 @@ function ellipseEdgeIntersection(rect: Rect, from: Point): Point {
  * an ellipse. An ellipse inscribed in its bounding box coincides with the
  * box edge along the cardinal axes (same as a plain rectangle) and still
  * cuts through empty space on the diagonals, so cardinal-angle connectors
- * saw no improvement at all from ellipseEdgeIntersection. Instead, flatten
- * the exact path used for rendering into a polygon and ray-cast against
- * that, the same shape the user actually sees.
+ * saw no improvement at all from an inscribed-ellipse approximation.
+ * Instead, flatten the exact path used for rendering into a polygon and
+ * ray-cast against that, the same shape the user actually sees.
  */
 
 interface ArcSegment {
@@ -367,7 +372,7 @@ function diamondEdgeIntersection(rect: Rect, from: Point): Point {
 export function edgeIntersection(rect: Rect, from: Point, kind?: ShapeKind): Point {
   if (kind === "cloud") return cloudEdgeIntersection(rect, from);
   if (kind === "database") return databaseEdgeIntersection(rect, from);
-  if (kind === "junction") return ellipseEdgeIntersection(rect, from);
+  if (kind === "junction") return circleEdgeIntersection(rect, from);
   if (kind === "decision") return diamondEdgeIntersection(rect, from);
   const radius = kind && ROUNDED_RECT_RADIUS[kind];
   if (radius) return roundedRectEdgeIntersection(rect, from, radius);
