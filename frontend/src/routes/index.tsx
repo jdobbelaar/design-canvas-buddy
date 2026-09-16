@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, Database, Share2, Users } from "lucide-react";
 import { useState } from "react";
-import { MockBackendClient } from "@/lib/collab/mock-backend";
+import { WebSocketBackendClient } from "@/lib/collab/ws-backend";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -30,8 +30,13 @@ function Landing() {
 
   const startSession = async () => {
     setBusy(true);
-    const sessionId = await new MockBackendClient().createSession();
-    void navigate({ to: "/session/$sessionId", params: { sessionId }, search: { host: 1 } });
+    try {
+      const sessionId = await new WebSocketBackendClient().createSession();
+      void navigate({ to: "/session/$sessionId", params: { sessionId }, search: { host: 1 } });
+    } catch (error) {
+      console.error("Failed to create session", error);
+      setBusy(false);
+    }
   };
 
   return (

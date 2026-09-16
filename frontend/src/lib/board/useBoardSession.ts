@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { BoardDoc, BoardObject, BoardOp, Participant, Point, Viewport } from "../collab/types";
-import { MockBackendClient, PARTICIPANT_COLORS, newId } from "../collab/mock-backend";
+import type {
+  BackendClient,
+  BoardDoc,
+  BoardObject,
+  BoardOp,
+  Participant,
+  Point,
+  Viewport,
+} from "../collab/types";
+import { PARTICIPANT_COLORS, newId } from "../collab/mock-backend";
+import { WebSocketBackendClient } from "../collab/ws-backend";
 import { applyOps, emptyHistory, invertOps, pushHistory, type History } from "./ops";
 
 export interface BoardSession {
@@ -33,7 +42,7 @@ export function useBoardSession(sessionId: string, role: "interviewer" | "candid
     [role],
   );
 
-  const clientRef = useRef<MockBackendClient | null>(null);
+  const clientRef = useRef<BackendClient | null>(null);
   const [doc, setDoc] = useState<BoardDoc>({});
   const docRef = useRef<BoardDoc>({});
   const [peers, setPeers] = useState<Participant[]>([]);
@@ -45,7 +54,7 @@ export function useBoardSession(sessionId: string, role: "interviewer" | "candid
   }, []);
 
   useEffect(() => {
-    const client = new MockBackendClient();
+    const client = new WebSocketBackendClient();
     clientRef.current = client;
     const off = client.subscribe((event) => {
       if (event.type === "ops") {
@@ -57,7 +66,9 @@ export function useBoardSession(sessionId: string, role: "interviewer" | "candid
         setPeers(event.participants);
       }
     });
-    void client.connect(sessionId, me);
+    client.connect(sessionId, me).catch((error: unknown) => {
+      console.error("Failed to connect to session", error);
+    });
     return () => {
       off();
       client.disconnect();

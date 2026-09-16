@@ -29,8 +29,8 @@ def test_join_receives_snapshot_with_seeded_objects(client):
         object_ids = {obj["id"] for obj in snapshot["objects"]}
         assert "seed-lb" in object_ids
         assert "seed-db" in object_ids
-        participant_ids = {p["id"] for p in snapshot["participants"]}
-        assert participant_ids == {"p1"}
+        # "Others" only — p1 doesn't see themselves in their own participant list.
+        assert snapshot["participants"] == []
 
 
 def test_second_join_broadcasts_presence_to_first_participant(bare_client):
@@ -46,7 +46,8 @@ def test_second_join_broadcasts_presence_to_first_participant(bare_client):
 
             presence = ws1.receive_json()  # p1 is told p2 joined
             assert presence["type"] == "presence"
-            assert {p["id"] for p in presence["participants"]} == {"p1", "p2"}
+            # "Others" only — p1 sees p2, but not themselves.
+            assert {p["id"] for p in presence["participants"]} == {"p2"}
 
 
 def test_ops_from_one_participant_are_broadcast_and_persisted(bare_client, bare_app):
@@ -137,7 +138,8 @@ def test_disconnect_removes_participant_and_notifies_remaining(bare_client, bare
         # ws2's `with` block exited -> disconnected.
         presence = ws1.receive_json()
         assert presence["type"] == "presence"
-        assert {p["id"] for p in presence["participants"]} == {"p1"}
+        # p1 is alone again now — "others" list is empty.
+        assert presence["participants"] == []
 
     session = bare_app.state.store.get_session(session_id)
     assert session.participants == {}

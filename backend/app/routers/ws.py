@@ -60,6 +60,20 @@ class ConnectionManager:
                 continue
             await ws.send_json(payload)
 
+    async def broadcast_presence(
+        self, session_id: str, session: SessionState, *, exclude: str | None = None
+    ) -> None:
+        """Send each connected participant the presence list of *other* participants.
+
+        Personalized per recipient (rather than one shared payload) so that
+        nobody sees themselves in their own participant list — the frontend
+        renders "you" separately and derives its head count as peers + 1.
+        """
+        for participant_id, ws in list(self._connections.get(session_id, {}).items()):
+            if participant_id == exclude:
+                continue
+            await ws.send_json(_presence_for(session, participant_id).model_dump(by_alias=True))
+
     async def send(self, websocket: WebSocket, event: ServerEvent) -> None:
         await websocket.send_json(event.model_dump(by_alias=True))
 
@@ -84,8 +98,11 @@ def _apply_ops(session: SessionState, ops: list[BoardOp]) -> None:
                 session.objects.pop(obj_id, None)
 
 
-def _presence(session: SessionState) -> ServerEventPresence:
-    return ServerEventPresence(participants=list(session.participants.values()))
+def _presence_for(session: SessionState, recipient_id: str) -> ServerEventPresence:
+    """Presence as *recipient_id* should see it: everyone else, not themselves."""
+    return ServerEventPresence(
+        participants=[p for pid, p in session.participants.items() if pid != recipient_id]
+    )
 
 
 @router.websocket("/ws/{session_id}")
@@ -118,12 +135,13 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
         await manager.send(
             websocket,
             ServerEventSnapshot(
-                objects=objects, participants=list(session.participants.values())
+                objects=objects,
+                participants=[p for pid, p in session.participants.items() if pid != participant_id],
             ),
         )
         # The joiner already has the up-to-date list via their snapshot above;
         # only notify the others.
-        await manager.broadcast(session_id, _presence(session), exclude=participant_id)
+        await manager.broadcast_presence(session_id, session, exclude=participant_id)
 
         while True:
             raw = await websocket.receive_json()
@@ -147,12 +165,12 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
                 participant = session.participants.get(event.from_)
                 if participant is not None:
                     participant.cursor = event.cursor
-                await manager.broadcast(session_id, _presence(session), exclude=participant_id)
+                await manager.broadcast_presence(session_id, session, exclude=participant_id)
             elif isinstance(event, ClientEventViewport):
                 participant = session.participants.get(event.from_)
                 if participant is not None:
                     participant.viewport = event.viewport
-                await manager.broadcast(session_id, _presence(session), exclude=participant_id)
+                await manager.broadcast_presence(session_id, session, exclude=participant_id)
             elif isinstance(event, ClientEventJoin):
                 continue  # Duplicate join on an already-open connection; ignore.
 
@@ -162,4 +180,4 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
         if participant_id is not None:
             manager.remove(session_id, participant_id)
             session.participants.pop(participant_id, None)
-            await manager.broadcast(session_id, _presence(session))
+            await manager.broadcast_presence(session_id, session)
