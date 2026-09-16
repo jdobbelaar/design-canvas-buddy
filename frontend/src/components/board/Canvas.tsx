@@ -33,7 +33,14 @@ type Gesture =
   | { mode: "pan"; originClient: Point; originView: Point }
   | { mode: "marquee"; origin: Point }
   | { mode: "move"; last: Point; ids: string[] }
-  | { mode: "resize"; ids: string[]; start: Rect; origin: Point }
+  | {
+      mode: "resize";
+      ids: string[];
+      start: Rect;
+      origin: Point;
+      /** Pre-gesture geometry, so scale is computed from a fixed baseline each frame. */
+      startObjects: Record<string, BoardObject>;
+    }
   | { mode: "pen" }
   | { mode: "connector"; fromId: string };
 
@@ -261,7 +268,18 @@ export function Canvas({ session }: Props) {
     if (handle && selectionBounds) {
       const ids = expandSelection(selection, doc);
       beginInteraction(ids);
-      gestureRef.current = { mode: "resize", ids, start: selectionBounds, origin: point };
+      const startObjects: Record<string, BoardObject> = {};
+      for (const id of ids) {
+        const object = doc[id];
+        if (object) startObjects[id] = object;
+      }
+      gestureRef.current = {
+        mode: "resize",
+        ids,
+        start: selectionBounds,
+        origin: point,
+        startObjects,
+      };
       return;
     }
 
@@ -347,7 +365,7 @@ export function Canvas({ session }: Props) {
       const scaleY = Math.max(0.1, (point.y - gesture.start.y) / Math.max(1, gesture.start.height));
       const updates: { id: string; patch: Partial<BoardObject> }[] = [];
       for (const id of gesture.ids) {
-        const object = doc[id];
+        const object = gesture.startObjects[id];
         if (!object) continue;
         const map = (p: Point) => ({
           x: gesture.start.x + (p.x - gesture.start.x) * scaleX,
@@ -369,11 +387,7 @@ export function Canvas({ session }: Props) {
           updates.push({ id, patch: { points: object.points.map(map) } as Partial<BoardObject> });
         }
       }
-      if (updates.length) {
-        // Resize is relative to the pre-gesture geometry, so re-anchor each frame.
-        applyLive([{ op: "update", updates }]);
-        gestureRef.current = { ...gesture, start: { ...gesture.start } };
-      }
+      if (updates.length) applyLive([{ op: "update", updates }]);
     }
   };
 
