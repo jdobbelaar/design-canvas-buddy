@@ -16,7 +16,10 @@ export const Route = createFileRoute("/session/$sessionId")({
         content: "A live shared canvas for a system design interview session.",
       },
       { property: "og:title", content: "Live system design interview canvas | Draftbench" },
-      { property: "og:description", content: "Join the shared canvas and diagram together in real time." },
+      {
+        property: "og:description",
+        content: "Join the shared canvas and diagram together in real time.",
+      },
       { name: "robots", content: "noindex" },
     ],
   }),

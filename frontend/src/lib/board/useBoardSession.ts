@@ -32,7 +32,10 @@ export interface BoardSession {
   publishViewport: (viewport: Viewport) => void;
 }
 
-export function useBoardSession(sessionId: string, role: "interviewer" | "candidate"): BoardSession {
+export function useBoardSession(
+  sessionId: string,
+  role: "interviewer" | "candidate",
+): BoardSession {
   const me = useMemo<Participant>(
     () => ({
       id: newId("p"),
@@ -136,7 +139,10 @@ export function useBoardSession(sessionId: string, role: "interviewer" | "candid
       if (!patchKeys.length) continue;
       const pick = (source: BoardObject) =>
         Object.fromEntries(
-          patchKeys.map((key) => [key, (source as unknown as Record<string, unknown>)[key as string]]),
+          patchKeys.map((key) => [
+            key,
+            (source as unknown as Record<string, unknown>)[key as string],
+          ]),
         ) as Partial<BoardObject>;
       undoUpdates.push({ id, patch: pick(before) });
       redoUpdates.push({ id, patch: pick(after) });

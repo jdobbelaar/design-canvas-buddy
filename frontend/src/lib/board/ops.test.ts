@@ -52,7 +52,13 @@ describe("invertOps", () => {
   it("restores grouping when a group op is undone", () => {
     const before = applyOps({}, [{ op: "add", objects: [box("a"), box("b")] }]);
     const group = [
-      { op: "update" as const, updates: [{ id: "a", patch: { groupId: "g1" } }, { id: "b", patch: { groupId: "g1" } }] },
+      {
+        op: "update" as const,
+        updates: [
+          { id: "a", patch: { groupId: "g1" } },
+          { id: "b", patch: { groupId: "g1" } },
+        ],
+      },
     ];
     const grouped = applyOps(before, group);
     expect(grouped["a"]?.groupId).toBe("g1");

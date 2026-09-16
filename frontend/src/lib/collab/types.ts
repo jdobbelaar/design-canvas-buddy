@@ -10,13 +10,7 @@ export const BOARD_WIDTH = 6000;
 export const BOARD_HEIGHT = 4000;
 
 export type ShapeKind =
-  | "box"
-  | "database"
-  | "queue"
-  | "cloud"
-  | "loadbalancer"
-  | "decision"
-  | "junction";
+  "box" | "database" | "queue" | "cloud" | "loadbalancer" | "decision" | "junction";
 
 export interface Point {
   x: number;

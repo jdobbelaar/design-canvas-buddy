@@ -69,7 +69,12 @@ function Landing() {
             onSubmit={(event) => {
               event.preventDefault();
               const sessionId = joinId.trim().split("/").pop();
-              if (sessionId) void navigate({ to: "/session/$sessionId", params: { sessionId }, search: { host: undefined } });
+              if (sessionId)
+                void navigate({
+                  to: "/session/$sessionId",
+                  params: { sessionId },
+                  search: { host: undefined },
+                });
             }}
           >
             <input
@@ -90,9 +95,21 @@ function Landing() {
 
         <dl className="mt-16 grid gap-8 sm:grid-cols-3">
           {[
-            { icon: Users, title: "No accounts", body: "Access is link-based. Both sides edit equally." },
-            { icon: Database, title: "Design toolkit", body: "Services, databases, queues, load balancers, decisions." },
-            { icon: Share2, title: "Live everything", body: "Cursors, viewports and edits sync as you talk." },
+            {
+              icon: Users,
+              title: "No accounts",
+              body: "Access is link-based. Both sides edit equally.",
+            },
+            {
+              icon: Database,
+              title: "Design toolkit",
+              body: "Services, databases, queues, load balancers, decisions.",
+            },
+            {
+              icon: Share2,
+              title: "Live everything",
+              body: "Cursors, viewports and edits sync as you talk.",
+            },
           ].map(({ icon: Icon, title, body }) => (
             <div key={title}>
               <Icon className="h-5 w-5 text-primary" />

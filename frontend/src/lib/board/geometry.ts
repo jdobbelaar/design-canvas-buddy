@@ -31,7 +31,12 @@ export function boundsOf(object: BoardObject, doc: BoardDoc): Rect | null {
       const ys = object.points.map((p) => p.y);
       const x = Math.min(...xs);
       const y = Math.min(...ys);
-      return { x, y, width: Math.max(1, Math.max(...xs) - x), height: Math.max(1, Math.max(...ys) - y) };
+      return {
+        x,
+        y,
+        width: Math.max(1, Math.max(...xs) - x),
+        height: Math.max(1, Math.max(...ys) - y),
+      };
     }
     case "connector": {
       const a = endPoint(object.from, doc);
@@ -53,7 +58,12 @@ export function unionRects(rects: Rect[]): Rect | null {
 }
 
 export function rectsIntersect(a: Rect, b: Rect): boolean {
-  return !(a.x + a.width < b.x || b.x + b.width < a.x || a.y + a.height < b.y || b.y + b.height < a.y);
+  return !(
+    a.x + a.width < b.x ||
+    b.x + b.width < a.x ||
+    a.y + a.height < b.y ||
+    b.y + b.height < a.y
+  );
 }
 
 export function pointInRect(p: Point, r: Rect): boolean {
@@ -124,7 +134,9 @@ export function distanceToSegment(p: Point, a: Point, b: Point): number {
 /** Translate an object by (dx, dy), returning the patch to apply. */
 export function translatePatch(object: BoardObject, dx: number, dy: number): Partial<BoardObject> {
   if (object.type === "draw") {
-    return { points: object.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } as Partial<BoardObject>;
+    return {
+      points: object.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+    } as Partial<BoardObject>;
   }
   if (object.type === "connector") {
     const move = (end: ConnectorEnd): ConnectorEnd =>

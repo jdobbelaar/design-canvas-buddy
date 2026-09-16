@@ -56,7 +56,12 @@ export function Canvas({ session }: Props) {
   const gestureRef = useRef<Gesture | null>(null);
 
   const viewport = useMemo(
-    () => ({ x: view.x, y: view.y, width: size.width / view.zoom, height: size.height / view.zoom }),
+    () => ({
+      x: view.x,
+      y: view.y,
+      width: size.width / view.zoom,
+      height: size.height / view.zoom,
+    }),
     [view, size],
   );
 
@@ -89,7 +94,9 @@ export function Canvas({ session }: Props) {
   const objects = useMemo(() => Object.values(doc), [doc]);
 
   const selectionBounds = useMemo(() => {
-    const rects = selection.map((id) => doc[id] && boundsOf(doc[id]!, doc)).filter(Boolean) as Rect[];
+    const rects = selection
+      .map((id) => doc[id] && boundsOf(doc[id]!, doc))
+      .filter(Boolean) as Rect[];
     return unionRects(rects);
   }, [selection, doc]);
 
@@ -104,7 +111,8 @@ export function Canvas({ session }: Props) {
         }
         if (object.type === "draw") {
           for (let p = 1; p < object.points.length; p++) {
-            if (distanceToSegment(point, object.points[p - 1]!, object.points[p]!) < 8) return object;
+            if (distanceToSegment(point, object.points[p - 1]!, object.points[p]!) < 8)
+              return object;
           }
           continue;
         }
@@ -170,12 +178,14 @@ export function Canvas({ session }: Props) {
 
       if (meta && event.key.toLowerCase() === "z") {
         event.preventDefault();
-        event.shiftKey ? session.redo() : session.undo();
+        if (event.shiftKey) session.redo();
+        else session.undo();
         return;
       }
       if (meta && event.key.toLowerCase() === "g") {
         event.preventDefault();
-        event.shiftKey ? ungroupSelection() : groupSelection();
+        if (event.shiftKey) ungroupSelection();
+        else groupSelection();
         return;
       }
       if (event.key === "Delete" || event.key === "Backspace") {
@@ -205,7 +215,11 @@ export function Canvas({ session }: Props) {
     const point = toBoard(event.clientX, event.clientY);
 
     if (event.button === 1 || event.button === 2 || event.altKey) {
-      gestureRef.current = { mode: "pan", originClient: { x: event.clientX, y: event.clientY }, originView: { x: view.x, y: view.y } };
+      gestureRef.current = {
+        mode: "pan",
+        originClient: { x: event.clientX, y: event.clientY },
+        originView: { x: view.x, y: view.y },
+      };
       return;
     }
 
@@ -282,8 +296,16 @@ export function Canvas({ session }: Props) {
     if (gesture.mode === "pan") {
       setView((v) => ({
         ...v,
-        x: clamp(gesture.originView.x - (event.clientX - gesture.originClient.x) / v.zoom, 0, BOARD_WIDTH - size.width / v.zoom),
-        y: clamp(gesture.originView.y - (event.clientY - gesture.originClient.y) / v.zoom, 0, BOARD_HEIGHT - size.height / v.zoom),
+        x: clamp(
+          gesture.originView.x - (event.clientX - gesture.originClient.x) / v.zoom,
+          0,
+          BOARD_WIDTH - size.width / v.zoom,
+        ),
+        y: clamp(
+          gesture.originView.y - (event.clientY - gesture.originClient.y) / v.zoom,
+          0,
+          BOARD_HEIGHT - size.height / v.zoom,
+        ),
       }));
       return;
     }
@@ -408,7 +430,12 @@ export function Canvas({ session }: Props) {
     const object = doc[editing.id];
     if (object) {
       const key = object.type === "text" ? "text" : "label";
-      const ops: BoardOp[] = [{ op: "update", updates: [{ id: editing.id, patch: { [key]: editing.value } as Partial<BoardObject> }] }];
+      const ops: BoardOp[] = [
+        {
+          op: "update",
+          updates: [{ id: editing.id, patch: { [key]: editing.value } as Partial<BoardObject> }],
+        },
+      ];
       commit(ops);
     }
     setEditing(null);
@@ -456,7 +483,15 @@ export function Canvas({ session }: Props) {
             <pattern id="grid" width={40} height={40} patternUnits="userSpaceOnUse">
               <circle cx={1} cy={1} r={1} fill="var(--board-grid)" />
             </pattern>
-            <marker id="arrow" viewBox="0 0 10 10" refX={9} refY={5} markerWidth={7} markerHeight={7} orient="auto-start-reverse">
+            <marker
+              id="arrow"
+              viewBox="0 0 10 10"
+              refX={9}
+              refY={5}
+              markerWidth={7}
+              markerHeight={7}
+              orient="auto-start-reverse"
+            >
               <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink)" />
             </marker>
           </defs>
@@ -544,8 +579,14 @@ export function Canvas({ session }: Props) {
 
           {pendingLink && doc[pendingLink.fromId] ? (
             <line
-              x1={connectorGeometry({ objectId: pendingLink.fromId }, { point: pendingLink.to }, doc).start.x}
-              y1={connectorGeometry({ objectId: pendingLink.fromId }, { point: pendingLink.to }, doc).start.y}
+              x1={
+                connectorGeometry({ objectId: pendingLink.fromId }, { point: pendingLink.to }, doc)
+                  .start.x
+              }
+              y1={
+                connectorGeometry({ objectId: pendingLink.fromId }, { point: pendingLink.to }, doc)
+                  .start.y
+              }
               x2={pendingLink.to.x}
               y2={pendingLink.to.y}
               stroke="var(--selection)"
@@ -614,7 +655,8 @@ export function Canvas({ session }: Props) {
           className="absolute z-20 rounded-md border border-selection bg-card px-2 py-1 text-sm text-foreground outline-none"
           style={{
             left: (editingScreen.x - view.x) * view.zoom,
-            top: (editingScreen.y - view.y) * view.zoom + (editingScreen.height * view.zoom) / 2 - 16,
+            top:
+              (editingScreen.y - view.y) * view.zoom + (editingScreen.height * view.zoom) / 2 - 16,
             width: Math.max(120, editingScreen.width * view.zoom),
           }}
         />
@@ -649,10 +691,18 @@ export function Canvas({ session }: Props) {
       <div className="board-panel absolute bottom-4 left-4 flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
         <span>{Math.round(view.zoom * 100)}%</span>
         <span className="h-3 w-px bg-border" />
-        <button type="button" className="hover:text-foreground" onClick={() => setView((v) => ({ ...v, zoom: clamp(v.zoom * 0.9, MIN_ZOOM, MAX_ZOOM) }))}>
+        <button
+          type="button"
+          className="hover:text-foreground"
+          onClick={() => setView((v) => ({ ...v, zoom: clamp(v.zoom * 0.9, MIN_ZOOM, MAX_ZOOM) }))}
+        >
           −
         </button>
-        <button type="button" className="hover:text-foreground" onClick={() => setView((v) => ({ ...v, zoom: clamp(v.zoom * 1.1, MIN_ZOOM, MAX_ZOOM) }))}>
+        <button
+          type="button"
+          className="hover:text-foreground"
+          onClick={() => setView((v) => ({ ...v, zoom: clamp(v.zoom * 1.1, MIN_ZOOM, MAX_ZOOM) }))}
+        >
           +
         </button>
         <span className="h-3 w-px bg-border" />

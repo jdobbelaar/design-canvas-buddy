@@ -34,5 +34,11 @@ export function createStroke(points: Point[]): BoardObject {
 }
 
 export function createConnector(fromId: string, toId: string): BoardObject {
-  return { id: newId("o"), type: "connector", from: { objectId: fromId }, to: { objectId: toId }, label: "" };
+  return {
+    id: newId("o"),
+    type: "connector",
+    from: { objectId: fromId },
+    to: { objectId: toId },
+    label: "",
+  };
 }

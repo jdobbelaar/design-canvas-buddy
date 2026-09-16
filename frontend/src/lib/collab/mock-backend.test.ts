@@ -66,8 +66,12 @@ describe("MockBackendClient", () => {
   it("announces presence to both peers on join", () => {
     const presenceA = eventsA.filter((e) => e.type === "presence").at(-1);
     const presenceB = eventsB.filter((e) => e.type === "presence").at(-1);
-    expect(presenceA && presenceA.type === "presence" && presenceA.participants.map((p) => p.id)).toEqual(["b"]);
-    expect(presenceB && presenceB.type === "presence" && presenceB.participants.map((p) => p.id)).toEqual(["a"]);
+    expect(
+      presenceA && presenceA.type === "presence" && presenceA.participants.map((p) => p.id),
+    ).toEqual(["b"]);
+    expect(
+      presenceB && presenceB.type === "presence" && presenceB.participants.map((p) => p.id),
+    ).toEqual(["a"]);
   });
 
   it("relays ops to the peer but never echoes them back to the sender", () => {
@@ -84,7 +88,9 @@ describe("MockBackendClient", () => {
     c.subscribe((e) => eventsC.push(e));
     await c.connect("s1", participant("c", "candidate"));
 
-    const received = eventsC.filter((e) => e.type === "ops").flatMap((e) => (e.type === "ops" ? e.ops : []));
+    const received = eventsC
+      .filter((e) => e.type === "ops")
+      .flatMap((e) => (e.type === "ops" ? e.ops : []));
     const added = received.flatMap((op) => (op.op === "add" ? op.objects.map((o) => o.id) : []));
     expect(added).toContain("o1");
   });
@@ -121,7 +127,15 @@ describe("MockBackendClient", () => {
 describe("swappability", () => {
   it("satisfies the BackendClient contract surface", () => {
     const client = new MockBackendClient();
-    for (const method of ["createSession", "connect", "disconnect", "sendOps", "sendCursor", "sendViewport", "subscribe"]) {
+    for (const method of [
+      "createSession",
+      "connect",
+      "disconnect",
+      "sendOps",
+      "sendCursor",
+      "sendViewport",
+      "subscribe",
+    ]) {
       expect(typeof (client as unknown as Record<string, unknown>)[method]).toBe("function");
     }
     vi.restoreAllMocks();
