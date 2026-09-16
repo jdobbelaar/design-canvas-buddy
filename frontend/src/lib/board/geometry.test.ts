@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundsOf,
+  cloudPathD,
   connectorGeometry,
   distanceToSegment,
   expandSelection,
@@ -111,6 +112,18 @@ describe("connectors", () => {
     expect(fromCorner.end.x).toBeLessThan(100);
     expect(fromCorner.end.y).toBeGreaterThan(50);
     expect(fromCorner.end.y).toBeLessThan(100);
+  });
+
+  it("keeps the cloud shape's arcs smooth (not pointy) when resized tall and narrow", () => {
+    // Arc radii used to scale off height alone. Made tall and narrow, they
+    // grew far past the available width, flattening each arc toward a
+    // straight line -- four flattened arcs in a row read as a pointy
+    // polygon, not a rounded cloud. Radii must stay bounded by the smaller
+    // dimension.
+    const d = cloudPathD({ x: 0, y: 0, width: 40, height: 300 });
+    const radii = [...d.matchAll(/A ([\d.]+) ([\d.]+)/g)].map((m) => Number(m[1]));
+    expect(radii.length).toBeGreaterThan(0);
+    for (const r of radii) expect(r).toBeLessThanOrEqual(20); // <= width / 2
   });
 
   it("hugs a decision (diamond) shape's angled edge, not its bounding box corner", () => {

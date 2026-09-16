@@ -142,13 +142,20 @@ function cloudArcs(rect: Rect): { start: Point; segments: ArcSegment[] } {
   const p2 = { x: p1.x + w * 0.26, y: p1.y - h * 0.26 };
   const p3 = { x: p2.x + w * 0.42, y: p2.y + h * 0.08 };
   const p4 = { x: p3.x + w * 0.08, y: p3.y + h * 0.64 };
+  // Radii are sized off the smaller dimension, not height alone. Height-only
+  // radii are fine at the usual wider-than-tall aspect ratio (min(w,h) is
+  // just h there, so this is a no-op), but resizing the shape tall and
+  // narrow grows them past the available width: an arc whose radius is far
+  // larger than the chord it spans gets flattened toward a straight line,
+  // and four flattened arcs in a row read as a pointy polygon, not a cloud.
+  const s = Math.min(w, h);
   return {
     start,
     segments: [
-      { rx: h * 0.24, ry: h * 0.24, to: p1 },
-      { rx: h * 0.28, ry: h * 0.28, to: p2 },
-      { rx: h * 0.3, ry: h * 0.3, to: p3 },
-      { rx: h * 0.24, ry: h * 0.24, to: p4 },
+      { rx: s * 0.24, ry: s * 0.24, to: p1 },
+      { rx: s * 0.28, ry: s * 0.28, to: p2 },
+      { rx: s * 0.3, ry: s * 0.3, to: p3 },
+      { rx: s * 0.24, ry: s * 0.24, to: p4 },
     ],
   };
 }
