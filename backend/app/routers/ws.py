@@ -2,13 +2,23 @@
 
 Implements the message protocol documented under the `/ws/{sessionId}`
 path in openapi.yaml (ClientEvent in, ServerEvent out). No auth required.
+
+Board objects (the actual diagram content) are persisted to the database
+via app/store.py -- every "ops" message is written straight through.
+Presence (who's connected, their cursor/viewport) is deliberately kept
+in-memory only (`_presence`): it's high-frequency, purely ephemeral
+per-connection state, not something that belongs in a database.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import TypeAdapter, ValidationError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app import store
 from app.models import (
     BoardObject,
     BoardOp,
@@ -21,12 +31,12 @@ from app.models import (
     ClientEventLeave,
     ClientEventOps,
     ClientEventViewport,
+    Participant,
     ServerEvent,
     ServerEventOps,
     ServerEventPresence,
     ServerEventSnapshot,
 )
-from app.store import SessionState, Store
 
 router = APIRouter(tags=["collaboration"])
 
@@ -34,10 +44,24 @@ _client_event_adapter: TypeAdapter[ClientEvent] = TypeAdapter(ClientEvent)
 _board_object_adapter: TypeAdapter[BoardObject] = TypeAdapter(BoardObject)
 
 
+@dataclass
+class LivePresence:
+    """In-memory-only presence for one session: who's connected right now."""
+
+    participants: dict[str, Participant] = field(default_factory=dict)
+
+
+_presence: dict[str, LivePresence] = {}
+
+
+def _presence_for_session(session_id: str) -> LivePresence:
+    return _presence.setdefault(session_id, LivePresence())
+
+
 class ConnectionManager:
     """Tracks live WebSocket connections per session, for broadcast.
 
-    Runtime-only (not persisted state), so it lives outside Store.
+    Runtime-only (not persisted state).
     """
 
     def __init__(self) -> None:
@@ -61,7 +85,7 @@ class ConnectionManager:
             await ws.send_json(payload)
 
     async def broadcast_presence(
-        self, session_id: str, session: SessionState, *, exclude: str | None = None
+        self, session_id: str, presence: LivePresence, *, exclude: str | None = None
     ) -> None:
         """Send each connected participant the presence list of *other* participants.
 
@@ -72,7 +96,7 @@ class ConnectionManager:
         for participant_id, ws in list(self._connections.get(session_id, {}).items()):
             if participant_id == exclude:
                 continue
-            await ws.send_json(_presence_for(session, participant_id).model_dump(by_alias=True))
+            await ws.send_json(_presence_for(presence, participant_id).model_dump(by_alias=True))
 
     async def send(self, websocket: WebSocket, event: ServerEvent) -> None:
         await websocket.send_json(event.model_dump(by_alias=True))
@@ -81,39 +105,40 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _apply_ops(session: SessionState, ops: list[BoardOp]) -> None:
-    for op in ops:
-        if isinstance(op, BoardOpAdd):
-            for obj in op.objects:
-                dumped = obj.model_dump(by_alias=True)
-                session.objects[dumped["id"]] = dumped
-        elif isinstance(op, BoardOpUpdate):
-            for update in op.updates:
-                existing = session.objects.get(update.id)
-                if existing is None:
-                    continue
-                session.objects[update.id] = {**existing, **update.patch}
-        elif isinstance(op, BoardOpDelete):
-            for obj_id in op.ids:
-                session.objects.pop(obj_id, None)
-
-
-def _presence_for(session: SessionState, recipient_id: str) -> ServerEventPresence:
+def _presence_for(presence: LivePresence, recipient_id: str) -> ServerEventPresence:
     """Presence as *recipient_id* should see it: everyone else, not themselves."""
     return ServerEventPresence(
-        participants=[p for pid, p in session.participants.items() if pid != recipient_id]
+        participants=[p for pid, p in presence.participants.items() if pid != recipient_id]
     )
+
+
+async def _apply_ops(
+    sessionmaker: async_sessionmaker, session_id: str, ops: list[BoardOp]
+) -> None:
+    async with sessionmaker() as db:
+        for op in ops:
+            if isinstance(op, BoardOpAdd):
+                dumped = [obj.model_dump(by_alias=True) for obj in op.objects]
+                await store.add_objects(db, session_id, dumped)
+            elif isinstance(op, BoardOpUpdate):
+                updates = [(update.id, update.patch) for update in op.updates]
+                await store.update_objects(db, session_id, updates)
+            elif isinstance(op, BoardOpDelete):
+                await store.delete_objects(db, session_id, op.ids)
 
 
 @router.websocket("/ws/{session_id}")
 async def collaborate(websocket: WebSocket, session_id: str) -> None:
-    store: Store = websocket.app.state.store
+    sessionmaker: async_sessionmaker = websocket.app.state.db_sessionmaker
     await websocket.accept()
 
-    session = store.get_session(session_id)
+    async with sessionmaker() as db:
+        session = await store.get_session(db, session_id)
     if session is None:
         await websocket.close(code=4404, reason="Session not found")
         return
+
+    presence = _presence_for_session(session_id)
 
     participant_id: str | None = None
     try:
@@ -128,20 +153,21 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
             return
 
         participant_id = first_event.participant.id
-        session.participants[participant_id] = first_event.participant
+        presence.participants[participant_id] = first_event.participant
         manager.add(session_id, participant_id, websocket)
 
-        objects = [_board_object_adapter.validate_python(o) for o in session.objects.values()]
+        async with sessionmaker() as db:
+            objects_data = await store.get_session_objects(db, session_id)
+        objects = [_board_object_adapter.validate_python(o) for o in objects_data]
         await manager.send(
             websocket,
             ServerEventSnapshot(
-                objects=objects,
-                participants=[p for pid, p in session.participants.items() if pid != participant_id],
+                objects=objects, participants=_presence_for(presence, participant_id).participants
             ),
         )
         # The joiner already has the up-to-date list via their snapshot above;
         # only notify the others.
-        await manager.broadcast_presence(session_id, session, exclude=participant_id)
+        await manager.broadcast_presence(session_id, presence, exclude=participant_id)
 
         while True:
             raw = await websocket.receive_json()
@@ -155,22 +181,22 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
                 await websocket.close()
                 break
             elif isinstance(event, ClientEventOps):
-                _apply_ops(session, event.ops)
+                await _apply_ops(sessionmaker, session_id, event.ops)
                 await manager.broadcast(
                     session_id,
                     ServerEventOps(from_=event.from_, ops=event.ops),
                     exclude=participant_id,
                 )
             elif isinstance(event, ClientEventCursor):
-                participant = session.participants.get(event.from_)
+                participant = presence.participants.get(event.from_)
                 if participant is not None:
                     participant.cursor = event.cursor
-                await manager.broadcast_presence(session_id, session, exclude=participant_id)
+                await manager.broadcast_presence(session_id, presence, exclude=participant_id)
             elif isinstance(event, ClientEventViewport):
-                participant = session.participants.get(event.from_)
+                participant = presence.participants.get(event.from_)
                 if participant is not None:
                     participant.viewport = event.viewport
-                await manager.broadcast_presence(session_id, session, exclude=participant_id)
+                await manager.broadcast_presence(session_id, presence, exclude=participant_id)
             elif isinstance(event, ClientEventJoin):
                 continue  # Duplicate join on an already-open connection; ignore.
 
@@ -179,5 +205,7 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
     finally:
         if participant_id is not None:
             manager.remove(session_id, participant_id)
-            session.participants.pop(participant_id, None)
-            await manager.broadcast_presence(session_id, session)
+            presence.participants.pop(participant_id, None)
+            if not presence.participants:
+                _presence.pop(session_id, None)
+            await manager.broadcast_presence(session_id, presence)

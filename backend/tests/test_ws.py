@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.store import SEED_SESSION_ID
+from app import store
+from app.seed import SEED_SESSION_ID
+
+from .conftest import run_db
 
 
 def _join_event(session_id: str, participant_id: str, role: str = "interviewer") -> dict:
@@ -91,9 +94,10 @@ def test_ops_from_one_participant_are_broadcast_and_persisted(bare_client, bare_
             assert relayed["from"] == "p1"
             assert relayed["ops"][0]["objects"][0]["id"] == "shape-1"
 
-    session = bare_app.state.store.get_session(session_id)
-    assert "shape-1" in session.objects
-    assert session.objects["shape-1"]["label"] == "New Service"
+    objects = run_db(bare_app, lambda db: store.get_session_objects(db, session_id))
+    objects_by_id = {obj["id"]: obj for obj in objects}
+    assert "shape-1" in objects_by_id
+    assert objects_by_id["shape-1"]["label"] == "New Service"
 
 
 def test_cursor_update_is_broadcast_as_presence(bare_client):
@@ -123,7 +127,7 @@ def test_cursor_update_is_broadcast_as_presence(bare_client):
             assert p2["cursor"] == {"x": 42, "y": 7}
 
 
-def test_disconnect_removes_participant_and_notifies_remaining(bare_client, bare_app):
+def test_disconnect_removes_participant_and_notifies_remaining(bare_client):
     session_id = bare_client.post("/sessions").json()["sessionId"]
 
     with bare_client.websocket_connect(f"/ws/{session_id}") as ws1:
@@ -140,6 +144,3 @@ def test_disconnect_removes_participant_and_notifies_remaining(bare_client, bare
         assert presence["type"] == "presence"
         # p1 is alone again now — "others" list is empty.
         assert presence["participants"] == []
-
-    session = bare_app.state.store.get_session(session_id)
-    assert session.participants == {}

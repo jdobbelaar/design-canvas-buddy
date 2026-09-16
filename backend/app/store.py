@@ -1,219 +1,106 @@
-"""In-memory data store.
+"""Data-access layer: async CRUD functions over the SQLAlchemy models.
 
-Everything here lives in process memory and is lost on restart. Each
-``Store`` instance is independent, which is what lets tests create a fresh,
-isolated store per test via the ``app`` fixture rather than sharing global
-state.
+Routers call these instead of talking to SQLAlchemy directly, so the
+database layer stays swappable (SQLite today, Postgres later) behind one
+seam. Each function takes the request's `AsyncSession` (see app/db.py's
+`get_db` dependency) as its first argument.
 """
 
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass, field
 
-from app.models import Participant
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-
-@dataclass
-class StoredUser:
-    id: str
-    email: str
-    name: str | None
-    password_hash: str
-
-
-@dataclass
-class SessionState:
-    id: str
-    objects: dict[str, dict] = field(default_factory=dict)
-    participants: dict[str, Participant] = field(default_factory=dict)
+from app.db_models import BoardObjectRecord, BoardSessionRecord, TokenRecord, UserRecord
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(6)}"
 
 
-class Store:
-    """Holds users, auth tokens, and collaboration sessions."""
-
-    def __init__(self) -> None:
-        self.users: dict[str, StoredUser] = {}
-        self._user_id_by_email: dict[str, str] = {}
-        self.tokens: dict[str, str] = {}  # token -> user id
-        self.sessions: dict[str, SessionState] = {}
-
-    # -- users -------------------------------------------------------
-
-    def get_user_by_email(self, email: str) -> StoredUser | None:
-        user_id = self._user_id_by_email.get(email.lower())
-        return self.users.get(user_id) if user_id else None
-
-    def get_user(self, user_id: str) -> StoredUser | None:
-        return self.users.get(user_id)
-
-    def create_user(self, email: str, name: str | None, password_hash: str) -> StoredUser:
-        user = StoredUser(
-            id=_new_id("u"), email=email, name=name, password_hash=password_hash
-        )
-        self.users[user.id] = user
-        self._user_id_by_email[email.lower()] = user.id
-        return user
-
-    # -- tokens --------------------------------------------------------
-
-    def issue_token(self, user_id: str) -> str:
-        token = secrets.token_urlsafe(32)
-        self.tokens[token] = user_id
-        return token
-
-    def get_user_by_token(self, token: str) -> StoredUser | None:
-        user_id = self.tokens.get(token)
-        return self.users.get(user_id) if user_id else None
-
-    # -- sessions --------------------------------------------------------
-
-    def create_session(self) -> SessionState:
-        session_id = _new_id("s")
-        session = SessionState(id=session_id)
-        self.sessions[session_id] = session
-        return session
-
-    def get_session(self, session_id: str) -> SessionState | None:
-        return self.sessions.get(session_id)
+# -- users ---------------------------------------------------------------
 
 
-# --------------------------------------------------------------------------
-# Seed data
-# --------------------------------------------------------------------------
-
-SEED_USER_EMAIL = "demo@example.com"
-SEED_USER_PASSWORD = "password123"
-
-_SEED_BOARD_OBJECTS: list[dict] = [
-    {
-        "id": "seed-client",
-        "type": "shape",
-        "kind": "box",
-        "x": 80,
-        "y": 220,
-        "width": 160,
-        "height": 80,
-        "label": "Client",
-    },
-    {
-        "id": "seed-lb",
-        "type": "shape",
-        "kind": "loadbalancer",
-        "x": 360,
-        "y": 220,
-        "width": 160,
-        "height": 80,
-        "label": "Load Balancer",
-    },
-    {
-        "id": "seed-api-1",
-        "type": "shape",
-        "kind": "box",
-        "x": 640,
-        "y": 100,
-        "width": 160,
-        "height": 80,
-        "label": "API Server 1",
-    },
-    {
-        "id": "seed-api-2",
-        "type": "shape",
-        "kind": "box",
-        "x": 640,
-        "y": 340,
-        "width": 160,
-        "height": 80,
-        "label": "API Server 2",
-    },
-    {
-        "id": "seed-queue",
-        "type": "shape",
-        "kind": "queue",
-        "x": 920,
-        "y": 220,
-        "width": 160,
-        "height": 80,
-        "label": "Job Queue",
-    },
-    {
-        "id": "seed-db",
-        "type": "shape",
-        "kind": "database",
-        "x": 1200,
-        "y": 220,
-        "width": 160,
-        "height": 80,
-        "label": "Primary DB",
-    },
-    {
-        "id": "seed-note",
-        "type": "text",
-        "x": 360,
-        "y": 60,
-        "text": "Walk through the request path, then discuss scaling the DB.",
-    },
-    {
-        "id": "seed-edge-client-lb",
-        "type": "connector",
-        "from": {"objectId": "seed-client"},
-        "to": {"objectId": "seed-lb"},
-        "label": "",
-    },
-    {
-        "id": "seed-edge-lb-api1",
-        "type": "connector",
-        "from": {"objectId": "seed-lb"},
-        "to": {"objectId": "seed-api-1"},
-        "label": "",
-    },
-    {
-        "id": "seed-edge-lb-api2",
-        "type": "connector",
-        "from": {"objectId": "seed-lb"},
-        "to": {"objectId": "seed-api-2"},
-        "label": "",
-    },
-    {
-        "id": "seed-edge-api1-queue",
-        "type": "connector",
-        "from": {"objectId": "seed-api-1"},
-        "to": {"objectId": "seed-queue"},
-        "label": "async",
-    },
-    {
-        "id": "seed-edge-queue-db",
-        "type": "connector",
-        "from": {"objectId": "seed-queue"},
-        "to": {"objectId": "seed-db"},
-        "label": "",
-    },
-]
-
-SEED_SESSION_ID = "demo"
+async def get_user_by_email(db: AsyncSession, email: str) -> UserRecord | None:
+    result = await db.execute(select(UserRecord).where(UserRecord.email == email.lower()))
+    return result.scalar_one_or_none()
 
 
-def seed(store: Store) -> None:
-    """Populate a freshly created store with demo data.
+async def get_user(db: AsyncSession, user_id: str) -> UserRecord | None:
+    return await db.get(UserRecord, user_id)
 
-    - One demo user (see SEED_USER_EMAIL / SEED_USER_PASSWORD) so the auth
-      endpoints have something to log in with out of the box.
-    - One pre-populated session (SEED_SESSION_ID) with a small system-design
-      diagram, so opening the frontend against this backend shows a board
-      instead of a blank canvas.
-    """
-    from app.auth import hash_password
 
-    store.create_user(
-        email=SEED_USER_EMAIL,
-        name="Demo Interviewer",
-        password_hash=hash_password(SEED_USER_PASSWORD),
+async def create_user(
+    db: AsyncSession, *, email: str, name: str | None, password_hash: str
+) -> UserRecord:
+    user = UserRecord(id=_new_id("u"), email=email.lower(), name=name, password_hash=password_hash)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+# -- tokens ----------------------------------------------------------------
+
+
+async def issue_token(db: AsyncSession, user_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    db.add(TokenRecord(token=token, user_id=user_id))
+    await db.commit()
+    return token
+
+
+async def get_user_by_token(db: AsyncSession, token: str) -> UserRecord | None:
+    token_record = await db.get(TokenRecord, token)
+    if token_record is None:
+        return None
+    return await get_user(db, token_record.user_id)
+
+
+# -- sessions ----------------------------------------------------------------
+
+
+async def create_session(db: AsyncSession) -> BoardSessionRecord:
+    session = BoardSessionRecord(id=_new_id("s"))
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+async def get_session(db: AsyncSession, session_id: str) -> BoardSessionRecord | None:
+    return await db.get(BoardSessionRecord, session_id)
+
+
+async def get_session_objects(db: AsyncSession, session_id: str) -> list[dict]:
+    result = await db.execute(
+        select(BoardObjectRecord).where(BoardObjectRecord.session_id == session_id)
     )
+    return [row.data for row in result.scalars()]
 
-    session = SessionState(id=SEED_SESSION_ID)
-    session.objects = {obj["id"]: obj for obj in _SEED_BOARD_OBJECTS}
-    store.sessions[session.id] = session
+
+async def add_objects(db: AsyncSession, session_id: str, objects: list[dict]) -> None:
+    for obj in objects:
+        await db.merge(BoardObjectRecord(id=obj["id"], session_id=session_id, data=obj))
+    await db.commit()
+
+
+async def update_objects(
+    db: AsyncSession, session_id: str, updates: list[tuple[str, dict]]
+) -> None:
+    for object_id, patch in updates:
+        record = await db.get(BoardObjectRecord, object_id)
+        if record is None or record.session_id != session_id:
+            continue
+        record.data = {**record.data, **patch}
+    await db.commit()
+
+
+async def delete_objects(db: AsyncSession, session_id: str, ids: list[str]) -> None:
+    for object_id in ids:
+        record = await db.get(BoardObjectRecord, object_id)
+        if record is not None and record.session_id == session_id:
+            await db.delete(record)
+    await db.commit()

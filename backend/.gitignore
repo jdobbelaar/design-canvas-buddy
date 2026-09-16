@@ -4,3 +4,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+
+# Local SQLite database (see .env.example / DATABASE_URL) and its WAL files
+*.db
+*.db-wal
+*.db-shm
+.env

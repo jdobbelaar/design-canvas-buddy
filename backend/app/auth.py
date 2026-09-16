@@ -9,10 +9,13 @@ for routes that opt in (currently just ``GET /auth/me``).
 from __future__ import annotations
 
 import bcrypt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.store import Store, StoredUser
+from app.db import get_db
+from app.db_models import UserRecord
+from app.store import get_user_by_token
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -25,21 +28,17 @@ def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
-def get_store(request: Request) -> Store:
-    return request.app.state.store
-
-
-def get_current_user(
-    store: Store = Depends(get_store),
+async def get_current_user(
+    db: AsyncSession = Depends(get_db),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> StoredUser:
+) -> UserRecord:
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = store.get_user_by_token(credentials.credentials)
+    user = await get_user_by_token(db, credentials.credentials)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

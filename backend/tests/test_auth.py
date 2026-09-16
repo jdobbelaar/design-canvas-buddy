@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from app.store import SEED_USER_EMAIL, SEED_USER_PASSWORD
+from app import store
+from app.seed import SEED_USER_EMAIL, SEED_USER_PASSWORD
+
+from .conftest import run_db
 
 
 def test_register_returns_token_and_user(bare_client):
@@ -37,7 +40,7 @@ def test_passwords_are_hashed_not_stored_in_plaintext(bare_app, bare_client):
     bare_client.post(
         "/auth/register", json={"email": "hash@example.com", "password": "hunter22"}
     )
-    user = bare_app.state.store.get_user_by_email("hash@example.com")
+    user = run_db(bare_app, lambda db: store.get_user_by_email(db, "hash@example.com"))
     assert user is not None
     assert user.password_hash != "hunter22"
     assert user.password_hash.startswith("$2b$")
