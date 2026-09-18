@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -68,6 +68,11 @@ class BoardObjectRecord(Base):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("board_sessions.id", ondelete="CASCADE"), index=True
     )
+    # Creation order within the session. The client renders shapes in the order
+    # a snapshot lists them, so this is the on-screen z-order and must be stable.
+    # A database gives no such guarantee on its own: SQLite happens to return
+    # insertion order, but Postgres moves a row whenever it is updated.
+    seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # The full BoardObject payload (shape/text/draw/connector), exactly as
     # sent over the wire -- see openapi.yaml's BoardObject schema.
     data: Mapped[dict] = mapped_column(PortableJSON)

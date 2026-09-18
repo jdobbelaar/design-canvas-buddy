@@ -136,7 +136,7 @@ async def seed(db: AsyncSession) -> None:
 
     if await get_session(db, SEED_SESSION_ID) is None:
         db.add(BoardSessionRecord(id=SEED_SESSION_ID))
-        for obj in _SEED_BOARD_OBJECTS:
-            db.add(BoardObjectRecord(id=obj["id"], session_id=SEED_SESSION_ID, data=obj))
+        for seq, obj in enumerate(_SEED_BOARD_OBJECTS, start=1):
+            db.add(BoardObjectRecord(id=obj["id"], session_id=SEED_SESSION_ID, seq=seq, data=obj))
 
     await db.commit()

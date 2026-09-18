@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db_models import BoardObjectRecord, BoardSessionRecord, TokenRecord, UserRecord
@@ -76,14 +76,29 @@ async def get_session(db: AsyncSession, session_id: str) -> BoardSessionRecord |
 
 async def get_session_objects(db: AsyncSession, session_id: str) -> list[dict]:
     result = await db.execute(
-        select(BoardObjectRecord).where(BoardObjectRecord.session_id == session_id)
+        select(BoardObjectRecord)
+        .where(BoardObjectRecord.session_id == session_id)
+        # id breaks ties (rows that predate seq, or two participants adding at
+        # the same instant) so the order is always deterministic.
+        .order_by(BoardObjectRecord.seq, BoardObjectRecord.id)
     )
     return [row.data for row in result.scalars()]
 
 
 async def add_objects(db: AsyncSession, session_id: str, objects: list[dict]) -> None:
+    next_seq = await db.scalar(
+        select(func.coalesce(func.max(BoardObjectRecord.seq), 0)).where(
+            BoardObjectRecord.session_id == session_id
+        )
+    )
     for obj in objects:
-        await db.merge(BoardObjectRecord(id=obj["id"], session_id=session_id, data=obj))
+        record = await db.get(BoardObjectRecord, obj["id"])
+        if record is None:
+            next_seq += 1
+            db.add(BoardObjectRecord(id=obj["id"], session_id=session_id, seq=next_seq, data=obj))
+        elif record.session_id == session_id:
+            record.data = obj  # re-adding an existing object keeps its place
+        # else: the id belongs to another session; never touch that object.
     await db.commit()
 
 

@@ -23,8 +23,9 @@ def create_app(
     database_url: str | None = None,
     with_seed_data: bool = True,
     frontend_dir: str | None = None,
+    engine_kwargs: dict[str, object] | None = None,
 ) -> FastAPI:
-    engine = create_engine(database_url or database_url_from_env())
+    engine = create_engine(database_url or database_url_from_env(), **(engine_kwargs or {}))
     sessionmaker = make_sessionmaker(engine)
 
     @asynccontextmanager

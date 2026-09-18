@@ -47,6 +47,9 @@ COPY --from=frontend /build/.output/public ./static
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app && mkdir /data && chown app /data
 USER app
 
+# SQLite on the /data volume by default. To use Postgres instead, override at
+# run time (the asyncpg driver is already in the image), e.g.
+#   docker run -e DATABASE_URL=postgres://user:pass@host:5432/dbname ...
 ENV FRONTEND_DIR=/app/static \
     DATABASE_URL=sqlite+aiosqlite:////data/app.db
 VOLUME /data
