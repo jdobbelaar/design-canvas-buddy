@@ -1,0 +1,18 @@
+.git
+docs
+
+# Dependencies and build output are recreated inside the image
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+frontend/.output
+frontend/.wrangler
+frontend/dist
+
+# Local databases and secrets must never be baked into an image
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/.env
+**/.env.*

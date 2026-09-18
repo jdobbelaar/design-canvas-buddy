@@ -16,8 +16,11 @@ import type {
  */
 
 function httpBaseUrl(): string {
-  const configured = import.meta.env.VITE_BACKEND_URL;
-  return (configured ?? "http://localhost:8000").replace(/\/+$/, "");
+  // Dev: the Vite server (:8080) and FastAPI (:8000) are separate origins.
+  // Production: FastAPI serves this app itself (see the Dockerfile), so the
+  // API and WebSocket live on the same origin the page was loaded from.
+  const fallback = import.meta.env.DEV ? "http://localhost:8000" : window.location.origin;
+  return (import.meta.env.VITE_BACKEND_URL ?? fallback).replace(/\/+$/, "");
 }
 
 function wsBaseUrl(): string {
