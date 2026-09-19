@@ -146,3 +146,37 @@ test('a change is stored, so someone who joins later sees it too', async ({ brow
     await lateJoiner.context.close();
   }
 });
+
+test('"Copy invite link" puts the real link on the clipboard', async ({ browser, baseURL, browserName }) => {
+  // The other tests replace the clipboard, so they can't tell whether the button
+  // works. Browsers only expose navigator.clipboard on a secure context (HTTPS, or
+  // localhost); over plain HTTP the button used to say "Link copied" and copy
+  // nothing. Playwright can only grant real clipboard access in Chromium.
+  test.skip(browserName !== 'chromium', 'clipboard permissions can only be granted in Chromium');
+
+  const context = await browser.newContext({
+    baseURL,
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const page = await context.newPage();
+
+  try {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Start a session' }).click();
+    await expect(page).toHaveURL(/\/session\/[^/?]+\?host=1$/);
+    const sessionId = new URL(page.url()).pathname.split('/').pop()!;
+
+    expect(
+      await page.evaluate(() => window.isSecureContext),
+      'the app must be served over HTTPS (or from localhost), or browsers refuse clipboard access',
+    ).toBe(true);
+
+    await page.getByRole('button', { name: 'Copy invite link' }).click();
+    await expect(page.getByRole('button', { name: 'Link copied' })).toBeVisible();
+
+    const onClipboard = await page.evaluate(() => navigator.clipboard.readText());
+    expect(onClipboard).toBe(`${new URL(page.url()).origin}/session/${sessionId}`);
+  } finally {
+    await context.close();
+  }
+});
