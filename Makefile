@@ -1,6 +1,6 @@
 .PHONY: help install install-backend install-frontend \
 	dev backend frontend \
-	test test-backend test-frontend \
+	test test-backend test-frontend test-integration \
 	lint format clean
 
 help:
@@ -10,6 +10,7 @@ help:
 	@echo "  make frontend         Run the Vite frontend dev server on :8080"
 	@echo "  make test             Run backend + frontend tests"
 	@echo "  make test-backend     Run backend tests (pytest)"
+	@echo "  make test-integration Run integration tests against docker-compose.yaml (needs Docker; slow)"
 	@echo "  make test-frontend    Run frontend tests (vitest)"
 	@echo "  make lint             Lint the frontend"
 	@echo "  make format           Format the frontend"
@@ -36,6 +37,10 @@ test-backend:
 
 test-frontend:
 	cd frontend && npm run test
+
+# Not part of `make test`: needs Docker, builds the image, and takes minutes.
+test-integration:
+	cd backend && uv run pytest integration_tests -v
 
 lint:
 	cd frontend && npm run lint
