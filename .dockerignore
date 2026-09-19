@@ -16,3 +16,6 @@ frontend/dist
 **/*.db-shm
 **/.env
 **/.env.*
+
+# Test tooling; not needed to build the image
+e2e

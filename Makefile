@@ -1,6 +1,6 @@
-.PHONY: help install install-backend install-frontend \
+.PHONY: help install install-backend install-frontend install-e2e \
 	dev backend frontend \
-	test test-backend test-frontend test-integration \
+	test test-backend test-frontend test-integration test-e2e \
 	lint format clean
 
 help:
@@ -11,6 +11,8 @@ help:
 	@echo "  make test             Run backend + frontend tests"
 	@echo "  make test-backend     Run backend tests (pytest)"
 	@echo "  make test-integration Run integration tests against docker-compose.yaml (needs Docker; slow)"
+	@echo "  make install-e2e      Install the e2e tests' dependencies and Chromium"
+	@echo "  make test-e2e         Run browser end-to-end tests against docker-compose.yaml (needs Docker)"
 	@echo "  make test-frontend    Run frontend tests (vitest)"
 	@echo "  make lint             Lint the frontend"
 	@echo "  make format           Format the frontend"
@@ -41,6 +43,14 @@ test-frontend:
 # Not part of `make test`: needs Docker, builds the image, and takes minutes.
 test-integration:
 	cd backend && uv run pytest integration_tests -v
+
+install-e2e:
+	cd e2e && npm install && npm run install:browsers
+
+# Not part of `make test`: needs Docker and a browser, and builds the image.
+# Chromium only; `cd e2e && npm run test:all-browsers` adds Firefox and WebKit.
+test-e2e:
+	cd e2e && npm test
 
 lint:
 	cd frontend && npm run lint

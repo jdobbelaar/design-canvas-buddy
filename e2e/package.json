@@ -1,0 +1,17 @@
+{
+  "name": "design-canvas-buddy-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser end-to-end tests that run against docker-compose.yaml",
+  "scripts": {
+    "install:browsers": "playwright install chromium",
+    "test": "playwright test --project=chromium",
+    "test:all-browsers": "playwright test",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}
