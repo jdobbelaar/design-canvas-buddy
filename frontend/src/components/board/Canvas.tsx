@@ -20,6 +20,7 @@ import {
   type Rect,
 } from "@/lib/board/geometry";
 import { createConnector, createShape, createStroke, createText } from "@/lib/board/factory";
+import { wheelDeltaToPixels, wheelZoomFactor } from "@/lib/board/wheel";
 import { newId } from "@/lib/collab/mock-backend";
 import type { BoardSession } from "@/lib/board/useBoardSession";
 import { ShapeView } from "./ShapeView";
@@ -455,20 +456,33 @@ export function Canvas({ session }: Props) {
     setEditing(null);
   };
 
-  const onWheel = (event: React.WheelEvent) => {
-    if (!event.altKey) {
+  // A native, non-passive listener: React registers onWheel as passive, so
+  // preventDefault() there is ignored and the browser would act as well --
+  // zooming the whole page on Ctrl+wheel, navigating history on Alt+wheel
+  // (Firefox), or back/forward on a trackpad swipe. Nothing here scrolls, so the
+  // canvas owns every wheel event over it.
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      if (event.ctrlKey || event.metaKey) {
+        // Also covers trackpad pinch, which Chrome and Firefox send as Ctrl+wheel.
+        const factor = wheelZoomFactor(event.deltaY, event.deltaMode);
+        setView((v) => ({ ...v, zoom: clamp(v.zoom * factor, MIN_ZOOM, MAX_ZOOM) }));
+        return;
+      }
+      const dx = wheelDeltaToPixels(event.deltaX, event.deltaMode);
+      const dy = wheelDeltaToPixels(event.deltaY, event.deltaMode);
       setView((v) => ({
         ...v,
-        x: clamp(v.x + event.deltaX / v.zoom, 0, BOARD_WIDTH - size.width / v.zoom),
-        y: clamp(v.y + event.deltaY / v.zoom, 0, BOARD_HEIGHT - size.height / v.zoom),
+        x: clamp(v.x + dx / v.zoom, 0, BOARD_WIDTH - size.width / v.zoom),
+        y: clamp(v.y + dy / v.zoom, 0, BOARD_HEIGHT - size.height / v.zoom),
       }));
-      return;
-    }
-    setView((v) => {
-      const zoom = clamp(v.zoom * (event.deltaY < 0 ? 1.08 : 0.93), MIN_ZOOM, MAX_ZOOM);
-      return { ...v, zoom };
-    });
-  };
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, [size.width, size.height]);
 
   const editingScreen = editing && doc[editing.id] ? boundsOf(doc[editing.id]!, doc) : null;
 
@@ -483,7 +497,6 @@ export function Canvas({ session }: Props) {
         onPointerUp={onPointerUp}
         onPointerLeave={() => session.publishCursor(null)}
         onDoubleClick={onDoubleClick}
-        onWheel={onWheel}
         onContextMenu={(e) => e.preventDefault()}
       >
         <svg
@@ -720,7 +733,7 @@ export function Canvas({ session }: Props) {
           +
         </button>
         <span className="h-3 w-px bg-border" />
-        <span>Alt-drag to pan · Alt-scroll to zoom</span>
+        <span>Alt-drag to pan · Ctrl/⌘-scroll to zoom</span>
       </div>
     </div>
   );
