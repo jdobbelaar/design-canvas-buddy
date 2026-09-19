@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  design-canvas-buddy on one small EC2 instance: docker-compose.yaml (the app
+  plus Postgres) built and run from this repository. Deliberately the cheapest
+  shape that works -- no load balancer, NAT gateway, RDS or IAM roles.
+
+# Deploy (from the repo root, after `aws login`):
+#   aws cloudformation deploy --region us-east-1 --stack-name design-canvas-buddy \
+#     --template-file deploy/aws/cloudformation.yaml
+# The stack finishes once the app is actually answering requests (the first
+# boot builds the Docker image, which takes several minutes). Then:
+#   aws cloudformation describe-stacks --stack-name design-canvas-buddy \
+#     --query "Stacks[0].Outputs" --output table
+# Remove everything (and stop paying) with:
+#   aws cloudformation delete-stack --stack-name design-canvas-buddy
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Description: >-
+      t3.micro (1 GB) is cheapest; the image build uses a swap file to fit. If a
+      build ever runs out of memory, use t3.small (2 GB).
+
+  GitRepo:
+    Type: String
+    Default: https://github.com/jdobbelaar/design-canvas-buddy.git
+    Description: Public repository to build the app from.
+
+  GitRef:
+    Type: String
+    Default: main
+    Description: Branch, tag or full commit SHA to deploy. Pin a SHA for a reproducible deploy.
+
+  SshCidr:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. A CIDR allowed to SSH in (for example 203.0.113.7/32). Empty
+      (the default) opens no SSH port at all. Needs KeyName too.
+
+  KeyName:
+    Type: String
+    Default: ""
+    Description: Optional. Name of an existing EC2 key pair, to allow SSH as the ubuntu user.
+
+  LatestUbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+
+Conditions:
+  OpenSsh: !Not [!Equals [!Ref SshCidr, ""]]
+  HasKeyPair: !Not [!Equals [!Ref KeyName, ""]]
+
+Resources:
+  # The account has no default VPC, so the stack brings its own. VPCs, subnets,
+  # route tables and internet gateways are free.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy }
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy-public }
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy-public }
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: design-canvas-buddy web traffic (Postgres is never exposed)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: HTTP
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - !If
+          - OpenSsh
+          - Description: SSH from the allowed address
+            IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: !Ref SshCidr
+          - !Ref AWS::NoValue
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy }
+
+  # The instance's boot script reports to this handle when the app is serving
+  # (or when setup fails), so the stack's result reflects whether the app works.
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: Instance
+    Properties:
+      Handle: !Ref WaitHandle
+      Timeout: "1800"
+      Count: 1
+
+  Instance:
+    Type: AWS::EC2::Instance
+    # The boot script needs the internet (apt, git, Docker Hub) straight away.
+    DependsOn: [DefaultRoute, SubnetRouteTableAssociation]
+    Properties:
+      ImageId: !Ref LatestUbuntuAmi
+      InstanceType: !Ref InstanceType
+      KeyName: !If [HasKeyPair, !Ref KeyName, !Ref AWS::NoValue]
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds: [!Ref SecurityGroup]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            DeleteOnTermination: true
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+
+          # Tell CloudFormation how setup went.
+          signal() {
+            curl -sS -X PUT -H 'Content-Type:' \
+              --data-binary "{\"Status\":\"$1\",\"Reason\":\"$2\",\"UniqueId\":\"app\",\"Data\":\"$1\"}" \
+              "${WaitHandle}" || true
+          }
+          trap 'signal FAILURE "setup failed at line $LINENO; see /var/log/cloud-init-output.log"' ERR
+
+          # Building the image needs more memory than a t3.micro has; swap covers it.
+          fallocate -l 2G /swapfile
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+          export DEBIAN_FRONTEND=noninteractive
+          # First boot can still be running unattended-upgrades; wait for its apt lock.
+          apt-get -o DPkg::Lock::Timeout=300 update -y
+          apt-get -o DPkg::Lock::Timeout=300 install -y docker.io docker-compose-v2 docker-buildx git curl
+
+          # Cap container logs, or they slowly fill the 20 GB disk.
+          mkdir -p /etc/docker
+          cat > /etc/docker/daemon.json <<'JSON'
+          {"log-driver": "json-file", "log-opts": {"max-size": "10m", "max-file": "3"}}
+          JSON
+          systemctl enable --now docker
+
+          mkdir -p /opt/app
+          cd /opt/app
+          git init -q
+          git remote add origin "${GitRepo}"
+          git fetch -q --depth 1 origin "${GitRef}"
+          git checkout -q FETCH_HEAD
+
+          # docker-compose.yaml reads these. The password is generated here on
+          # first boot and never leaves the instance; Postgres is not published.
+          umask 077
+          cat > /opt/app/.env <<ENV
+          APP_PORT=80
+          POSTGRES_PASSWORD=$(openssl rand -hex 16)
+          ENV
+          umask 022
+
+          docker compose up -d --build
+
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost/openapi.json > /dev/null; then
+              signal SUCCESS "app is serving"
+              exit 0
+            fi
+            sleep 5
+          done
+          false
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: design-canvas-buddy }
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref Instance
+      AllocationId: !GetAtt ElasticIp.AllocationId
+
+Outputs:
+  AppUrl:
+    Description: Open this in a browser (plain HTTP).
+    Value: !Sub http://${ElasticIp}
+  InstanceId:
+    Value: !Ref Instance
+  SetupLogs:
+    Description: If setup ever fails, read the instance's boot output with this command.
+    Value: !Sub aws ec2 get-console-output --region ${AWS::Region} --instance-id ${Instance} --latest --output text
