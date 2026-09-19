@@ -55,8 +55,15 @@ ENV FRONTEND_DIR=/app/static \
 VOLUME /data
 EXPOSE 8000
 
+# Which build this is, reported by GET /health so a deploy can check that the new
+# version is the one serving. Declared this late on purpose: an ARG that changes
+# on every commit invalidates every layer after it, so nothing expensive follows.
+ARG GIT_SHA=dev
+ENV APP_VERSION=${GIT_SHA}
+
+# /health also checks the database, so "healthy" means the app can actually serve.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
 
 # Deliberately a single worker: live presence and the WebSocket connection
 # registry are held in this process's memory (app/routers/ws.py), so running

@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Lets GitHub Actions deploy design-canvas-buddy: an OIDC identity provider, a
+  narrowly scoped deploy role that only the repository's "production"
+  environment can assume, and an instance profile for the server so it can
+  receive deploy commands through AWS Systems Manager (no SSH, no stored keys).
+
+# One-time setup. Creating IAM resources needs administrator-level permissions
+# that the day-to-day deploy user should not keep, so run this as an admin (or
+# temporarily attach IAMFullAccess to that user, then detach it):
+#
+#   aws cloudformation deploy --stack-name design-canvas-buddy-github \
+#     --template-file deploy/aws/github-oidc.yaml \
+#     --capabilities CAPABILITY_NAMED_IAM
+#
+# If this AWS account already has a GitHub OIDC provider (there can be only one
+# per account), add:  --parameter-overrides CreateOidcProvider=false
+#
+# Then give the running server its role. Either redeploy the main stack with
+#   --parameter-overrides InstanceProfileName=<InstanceProfileName output>
+# or, without touching the stack, attach it directly:
+#   aws ec2 associate-iam-instance-profile --instance-id <InstanceId> \
+#     --iam-instance-profile Name=<InstanceProfileName output>
+#
+# Finally, in GitHub, create an environment named "production" and set the
+# repository variable AWS_DEPLOY_ROLE_ARN to the DeployRoleArn output.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: jdobbelaar/design-canvas-buddy
+    Description: owner/name of the repository allowed to deploy.
+
+  GitHubEnvironment:
+    Type: String
+    Default: production
+    Description: Only workflow jobs running in this GitHub environment may assume the role.
+
+  AppStackName:
+    Type: String
+    Default: design-canvas-buddy
+    Description: The main stack (cloudformation.yaml) the pipeline deploys to.
+
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set to false if the account already has token.actions.githubusercontent.com.
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: design-canvas-buddy-github-deploy
+      Description: Assumed by GitHub Actions (OIDC) to deploy design-canvas-buddy.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - MakeProvider
+                - !Ref GitHubProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Exactly this repository AND this environment. Nothing else
+                # (forks, other branches, pull requests) can get credentials.
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:environment:${GitHubEnvironment}
+      Policies:
+        - PolicyName: deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadStackOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*
+              - Sid: RunTheShellDocument
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+              - Sid: OnlyOnTheAppServer
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    ssm:resourceTag/Name: design-canvas-buddy
+              - Sid: ReadCommandResults
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                  - ssm:DescribeInstanceInformation
+                Resource: "*"
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: design-canvas-buddy-server
+      Description: Lets the server's SSM agent receive deploy commands.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: design-canvas-buddy-server
+      Roles: [!Ref InstanceRole]
+
+Outputs:
+  DeployRoleArn:
+    Description: Set this as the GitHub repository variable AWS_DEPLOY_ROLE_ARN.
+    Value: !GetAtt DeployRole.Arn
+  InstanceProfileName:
+    Description: Attach to the server (see the header of this file).
+    Value: !Ref InstanceProfile

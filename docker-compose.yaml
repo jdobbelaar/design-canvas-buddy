@@ -34,7 +34,11 @@ services:
       retries: 10
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # Reported by GET /health, so a deploy can prove which build is running.
+        GIT_SHA: ${GIT_SHA:-dev}
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8000}:8000"

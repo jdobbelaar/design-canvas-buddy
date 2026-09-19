@@ -1,0 +1,262 @@
+# CI/CD: test -> test the built Docker Compose stack -> deploy to AWS -> verify.
+#
+#   backend-tests ─┐
+#   frontend-tests ┼─> integration-tests ─┐
+#   template-checks┘    e2e-tests ─────────┼─> deploy (main only) -> verifies /health
+#
+# Deploying needs one-time AWS setup: see deploy/aws/github-oidc.yaml. Until the
+# repository variable AWS_DEPLOY_ROLE_ARN is set, the deploy job is skipped and
+# everything before it still runs.
+#
+# Actions are pinned to full commit SHAs (the comment names the release).
+
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch/PR supersedes a run that is still testing.
+# (Deploys have their own, non-cancelling group below.)
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  STACK_NAME: design-canvas-buddy
+
+jobs:
+  # ---- Stage 1: fast checks, all in parallel --------------------------------
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # The suite runs against SQLite by default; a real Postgres catches what
+      # SQLite can't (e.g. the stacking-order bug that only Postgres exposed).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: dcb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - name: pytest (SQLite)
+        run: uv run pytest
+      - name: pytest (Postgres)
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:test@localhost:5432/dcb_test
+        run: uv run pytest
+
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  template-checks:
+    name: Lint CloudFormation and deploy script
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: cfn-lint
+        run: uvx cfn-lint deploy/aws/cloudformation.yaml deploy/aws/github-oidc.yaml
+      - name: shellcheck
+        run: shellcheck deploy/aws/deploy.sh
+
+  # ---- Stage 2: the real Docker Compose stack -------------------------------
+  # Each job builds the image itself (GIT_SHA is baked in and reported by
+  # /health) and runs against its own throwaway stack.
+  integration-tests:
+    name: Integration tests (Docker Compose)
+    needs: [backend-tests, frontend-tests, template-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+        working-directory: backend
+      - run: uv run pytest integration_tests -v
+        working-directory: backend
+
+  e2e-tests:
+    name: End-to-end tests (Playwright, Docker Compose)
+    needs: [backend-tests, frontend-tests, template-checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GIT_SHA: ${{ github.sha }}
+    defaults:
+      run:
+        working-directory: e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: npm ci
+      # --with-deps also installs the system libraries the browsers need.
+      - run: npx playwright install --with-deps
+      - name: Playwright (Chromium, Firefox, WebKit)
+        run: npm run test:all-browsers
+      - name: Keep the report when tests fail
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---- Stage 3: deploy and verify -------------------------------------------
+  deploy:
+    name: Deploy to AWS
+    needs: [integration-tests, e2e-tests]
+    # Only main; and only once the AWS side has been set up.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The role's trust policy only accepts tokens issued for this environment,
+    # so a fork, another branch, or a pull request cannot assume it.
+    environment:
+      name: production
+    permissions:
+      id-token: write # request the OIDC token exchanged for AWS credentials
+      contents: read
+    # Never run two deploys at once, and never cancel one half-way through.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-${{ github.run_id }}
+
+      - name: Look up the server and its public URL
+        id: stack
+        run: |
+          outputs=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' --output json)
+          echo "instance_id=$(jq -r '.[] | select(.OutputKey=="InstanceId").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
+          echo "app_url=$(jq -r '.[] | select(.OutputKey=="AppUrl").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy this commit on the server (AWS Systems Manager)
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $SHA"; exit 1; }
+          [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
+
+          # Fetch exactly this commit (not "whatever main is now"), then run the
+          # deploy script that ships with it.
+          cat > commands.json <<EOF
+          {"commands": [
+            "set -euo pipefail",
+            "cd /opt/app",
+            "git fetch --quiet origin $SHA",
+            "git checkout --quiet --force $SHA",
+            "GIT_SHA=$SHA bash deploy/aws/deploy.sh"
+          ]}
+          EOF
+
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy $SHA" \
+            --timeout-seconds 900 \
+            --parameters file://commands.json \
+            --query Command.CommandId --output text)
+          echo "SSM command: $command_id"
+
+          # `aws ssm wait command-executed` gives up after ~100s, which is
+          # shorter than a build, so poll.
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $status"
+            case "$status" in Success|Failed|Cancelled|TimedOut|Cancelling) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '{stdout: StandardOutputContent, stderr: StandardErrorContent}' --output json \
+            | jq -r '"----- stdout -----", .stdout, "----- stderr -----", .stderr'
+          [ "$status" = Success ] || { echo "::error::deploy command finished as $status"; exit 1; }
+
+      # The server checked itself; this checks what users actually reach:
+      # CloudFront -> the server -> the app -> the database.
+      - name: Verify the public /health endpoint reports this commit
+        env:
+          APP_URL: ${{ steps.stack.outputs.app_url }}
+          SHA: ${{ github.sha }}
+        run: |
+          for attempt in $(seq 1 30); do
+            body=$(curl -sS --max-time 10 "$APP_URL/health" || true)
+            echo "attempt $attempt: ${body:-<no response>}"
+            if jq -e --arg sha "$SHA" \
+                '.status == "ok" and .database == "ok" and .version == $sha' <<<"$body" > /dev/null 2>&1; then
+              echo "Deployed $SHA to $APP_URL and it is healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$APP_URL/health never reported a healthy $SHA"
+          exit 1

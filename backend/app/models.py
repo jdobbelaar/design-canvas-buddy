@@ -240,3 +240,16 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     user: UserPublic
+
+
+# --------------------------------------------------------------------------
+# REST: health
+# --------------------------------------------------------------------------
+
+
+class HealthResponse(BaseModel):
+    status: Literal["ok", "unhealthy"]
+    database: Literal["ok", "unreachable"]
+    # The build serving this request (a git commit SHA when deployed by CI,
+    # "dev" otherwise), so a deploy can check that the *new* version is live.
+    version: str

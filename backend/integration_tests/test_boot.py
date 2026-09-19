@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 
 def test_both_services_are_running_and_healthy(stack):
     services = stack.services()
@@ -65,3 +67,21 @@ def test_data_written_through_the_api_lands_in_postgres(stack):
 def test_demo_data_was_seeded_exactly_once(stack):
     assert stack.psql("select count(*) from users where email='demo@example.com'") == "1"
     assert stack.psql("select count(*) from board_objects where session_id='demo'") == "12"
+
+
+def test_health_reports_the_build_that_is_running(stack):
+    # CI builds with GIT_SHA=<commit>; the deploy pipeline relies on /health
+    # echoing that back to prove the *new* version is the one serving. Locally
+    # nothing is set and the build reports "dev".
+    expected = os.environ.get("GIT_SHA") or "dev"
+    assert stack.http.get("/health").json() == {
+        "status": "ok",
+        "database": "ok",
+        "version": expected,
+    }
+
+
+def test_the_container_healthcheck_uses_the_health_endpoint(stack):
+    # Docker only reports "healthy" if /health passes -- and that includes the database.
+    check = stack.inspect("app")["Config"]["Healthcheck"]["Test"]
+    assert "/health" in " ".join(check)

@@ -66,6 +66,8 @@ def test_api_routes_take_precedence_over_the_catch_all(spa_client):
     assert resp.status_code == 201
     assert "sessionId" in resp.json()
     assert spa_client.get("/openapi.json").json()["info"]["title"]
+    # The deploy check must get JSON, not the app shell.
+    assert spa_client.get("/health").json()["status"] == "ok"
 
 
 def test_websocket_still_works_alongside_the_frontend(spa_client):

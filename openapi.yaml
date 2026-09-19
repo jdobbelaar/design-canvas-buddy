@@ -33,8 +33,36 @@ tags:
     description: Session lifecycle (REST)
   - name: collaboration
     description: Real-time board sync (WebSocket)
+  - name: health
+    description: Liveness, database connectivity and deployed version
 
 paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Is the app up, can it reach its database, and which build is running
+      description: |
+        Used by deploy pipelines and load balancers. Needs no authentication.
+        Returns 200 when the database answers a trivial query, and 503 when it
+        is unreachable or hangs (the check gives up after a few seconds).
+        `version` is the git commit SHA the running image was built from (or
+        `dev` for a local build), so a deploy can verify that the new version --
+        not merely *some* version -- is serving.
+      security: []
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: The database is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
   /sessions:
     post:
       tags: [sessions]
@@ -99,6 +127,21 @@ paths:
 
 components:
   schemas:
+    HealthResponse:
+      type: object
+      required: [status, database, version]
+      properties:
+        status:
+          type: string
+          enum: [ok, unhealthy]
+        database:
+          type: string
+          enum: [ok, unreachable]
+        version:
+          type: string
+          description: Git commit SHA of the running build, or "dev".
+          example: 9e8d810c5a3f0b1e2d4c6a8f0b2d4e6f8a0c1e3b
+
     CreateSessionResponse:
       type: object
       required: [sessionId]

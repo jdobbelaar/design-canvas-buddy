@@ -58,6 +58,14 @@ Parameters:
       describe-managed-prefix-lists --region REGION --filters
       Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
 
+  InstanceProfileName:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. Name of an IAM instance profile that lets the CI/CD pipeline deploy
+      through AWS Systems Manager (the InstanceProfileName output of
+      github-oidc.yaml). Empty means no role is attached.
+
   LatestUbuntuAmi:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
@@ -65,6 +73,7 @@ Parameters:
 Conditions:
   OpenSsh: !Not [!Equals [!Ref SshCidr, ""]]
   HasKeyPair: !Not [!Equals [!Ref KeyName, ""]]
+  HasInstanceProfile: !Not [!Equals [!Ref InstanceProfileName, ""]]
   IsUsEast1: !Equals [!Ref AWS::Region, us-east-1]
 
 Resources:
@@ -167,6 +176,7 @@ Resources:
       ImageId: !Ref LatestUbuntuAmi
       InstanceType: !Ref InstanceType
       KeyName: !If [HasKeyPair, !Ref KeyName, !Ref AWS::NoValue]
+      IamInstanceProfile: !If [HasInstanceProfile, !Ref InstanceProfileName, !Ref AWS::NoValue]
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds: [!Ref SecurityGroup]
       BlockDeviceMappings:

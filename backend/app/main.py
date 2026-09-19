@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import create_engine, database_url_from_env, init_db, make_sessionmaker
-from app.routers import auth, sessions, ws
+from app.routers import auth, health, sessions, ws
 from app.seed import seed
 from app.spa import mount_frontend
 
@@ -53,6 +53,7 @@ def create_app(
     app.state.db_engine = engine
     app.state.db_sessionmaker = sessionmaker
 
+    app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(sessions.router)
     app.include_router(ws.router)
