@@ -2,14 +2,16 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
   design-canvas-buddy on one small EC2 instance: docker-compose.yaml (the app
-  plus Postgres) built and run from this repository. Deliberately the cheapest
-  shape that works -- no load balancer, NAT gateway, RDS or IAM roles.
+  plus Postgres) built and run from this repository, served over HTTPS by
+  CloudFront. Deliberately the cheapest shape that works -- no load balancer,
+  NAT gateway, RDS or IAM roles.
 
 # Deploy (from the repo root, after `aws login`):
 #   aws cloudformation deploy --region us-east-1 --stack-name design-canvas-buddy \
 #     --template-file deploy/aws/cloudformation.yaml
 # The stack finishes once the app is actually answering requests (the first
-# boot builds the Docker image, which takes several minutes). Then:
+# boot builds the Docker image, which takes several minutes) and CloudFront has
+# finished deploying. Then:
 #   aws cloudformation describe-stacks --stack-name design-canvas-buddy \
 #     --query "Stacks[0].Outputs" --output table
 # Remove everything (and stop paying) with:
@@ -46,6 +48,16 @@ Parameters:
     Default: ""
     Description: Optional. Name of an existing EC2 key pair, to allow SSH as the ubuntu user.
 
+  CloudFrontPrefixListId:
+    Type: String
+    Default: pl-3b927c52
+    Description: >-
+      AWS's managed list of CloudFront's origin-facing addresses. The firewall
+      admits web traffic only from it, so the server can't be reached except
+      through CloudFront. This ID is for us-east-1; elsewhere run: aws ec2
+      describe-managed-prefix-lists --region REGION --filters
+      Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
+
   LatestUbuntuAmi:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
@@ -53,6 +65,7 @@ Parameters:
 Conditions:
   OpenSsh: !Not [!Equals [!Ref SshCidr, ""]]
   HasKeyPair: !Not [!Equals [!Ref KeyName, ""]]
+  IsUsEast1: !Equals [!Ref AWS::Region, us-east-1]
 
 Resources:
   # The account has no default VPC, so the stack brings its own. VPCs, subnets,
@@ -112,14 +125,16 @@ Resources:
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      # Do not edit GroupDescription: AWS cannot change it in place, so it would
+      # replace the group -- and with it, rebuild the instance and lose its database.
       GroupDescription: design-canvas-buddy web traffic (Postgres is never exposed)
       VpcId: !Ref Vpc
       SecurityGroupIngress:
-        - Description: HTTP
+        - Description: HTTP from CloudFront only
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
         - !If
           - OpenSsh
           - Description: SSH from the allowed address
@@ -238,10 +253,57 @@ Resources:
       InstanceId: !Ref Instance
       AllocationId: !GetAtt ElasticIp.AllocationId
 
+  # HTTPS for free, on a *.cloudfront.net address with a real certificate. The
+  # leg from CloudFront to the server is plain HTTP: an EC2 hostname can't get a
+  # trusted certificate, so encrypting it would need a domain name of your own.
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    # The origin hostname is derived from the Elastic IP, so wait for it to be attached.
+    DependsOn: ElasticIpAssociation
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: design-canvas-buddy
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100 # cheapest: North America and Europe edges
+        Origins:
+          - Id: app
+            # CloudFront needs a hostname, not an IP: use the Elastic IP's public DNS name.
+            DomainName: !Sub
+              - ec2-${DashedIp}.${Suffix}
+              - DashedIp: !Join ["-", !Split [".", !Ref ElasticIp]]
+                Suffix: !If [IsUsEast1, compute-1.amazonaws.com, !Sub "${AWS::Region}.compute.amazonaws.com"]
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+        DefaultCacheBehavior:
+          # The app itself (pages, API, WebSocket): never cache, forward everything,
+          # including the WebSocket upgrade headers.
+          TargetOriginId: app
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+          Compress: true
+        CacheBehaviors:
+          # Fingerprinted JS/CSS never change, so edges can serve them and spare the tiny server.
+          - PathPattern: /assets/*
+            TargetOriginId: app
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+            Compress: true
+
 Outputs:
   AppUrl:
-    Description: Open this in a browser (plain HTTP).
-    Value: !Sub http://${ElasticIp}
+    Description: Open this in a browser.
+    Value: !Sub https://${Distribution.DomainName}
+  ServerAddress:
+    Description: The server's own address. It only answers CloudFront; use AppUrl.
+    Value: !Ref ElasticIp
   InstanceId:
     Value: !Ref Instance
   SetupLogs:
