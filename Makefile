@@ -1,6 +1,6 @@
 .PHONY: help install install-backend install-frontend install-e2e \
 	dev backend frontend \
-	test test-backend test-frontend test-integration test-e2e \
+	test test-backend test-frontend test-integration test-e2e e2e \
 	lint format clean
 
 help:
@@ -12,7 +12,8 @@ help:
 	@echo "  make test-backend     Run backend tests (pytest)"
 	@echo "  make test-integration Run integration tests against docker-compose.yaml (needs Docker; slow)"
 	@echo "  make install-e2e      Install the e2e tests' dependencies and Chromium"
-	@echo "  make test-e2e         Run browser end-to-end tests against docker-compose.yaml (needs Docker)"
+	@echo "  make e2e              Install what the e2e tests need, then run them (needs Docker)"
+	@echo "  make test-e2e         Just run the e2e tests (after make install-e2e)"
 	@echo "  make test-frontend    Run frontend tests (vitest)"
 	@echo "  make lint             Lint the frontend"
 	@echo "  make format           Format the frontend"
@@ -51,6 +52,11 @@ install-e2e:
 # Chromium only; `cd e2e && npm run test:all-browsers` adds Firefox and WebKit.
 test-e2e:
 	cd e2e && npm test
+
+# One command from a fresh checkout. This must stay in .PHONY: there is an e2e/
+# directory, and without it `make e2e` sees an existing file with no rule and
+# silently does nothing ("Nothing to be done for `e2e'").
+e2e: install-e2e test-e2e
 
 lint:
 	cd frontend && npm run lint
