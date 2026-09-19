@@ -26,10 +26,15 @@ Description: >-
 # repository variable AWS_DEPLOY_ROLE_ARN to the DeployRoleArn output.
 
 Parameters:
-  GitHubRepo:
+  GitHubSubject:
     Type: String
-    Default: jdobbelaar/design-canvas-buddy
-    Description: owner/name of the repository allowed to deploy.
+    Default: repo:jdobbelaar@7696911/design-canvas-buddy@1363452304
+    Description: >-
+      The repository part of the token subject (the "sub" claim, before
+      ":environment:..."). This repo has GitHub's immutable subject setting on, so it
+      names the owner and repository by numeric id, which survives renames and
+      transfers. Read it with: gh api repos/OWNER/REPO/actions/oidc/customization/sub
+      (sub_claim_prefix). With the default setting it is repo:OWNER/REPO.
 
   GitHubEnvironment:
     Type: String
@@ -79,7 +84,7 @@ Resources:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
                 # Exactly this repository AND this environment. Nothing else
                 # (forks, other branches, pull requests) can get credentials.
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:environment:${GitHubEnvironment}
+                token.actions.githubusercontent.com:sub: !Sub ${GitHubSubject}:environment:${GitHubEnvironment}
       Policies:
         - PolicyName: deploy
           PolicyDocument:

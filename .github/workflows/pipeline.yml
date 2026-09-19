@@ -208,7 +208,7 @@ jobs:
           # deploy script that ships with it.
           cat > commands.json <<EOF
           {"commands": [
-            "set -euo pipefail",
+            "set -eu",
             "cd /opt/app",
             "git fetch --quiet origin $SHA",
             "git checkout --quiet --force $SHA",
