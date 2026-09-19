@@ -1,0 +1,2 @@
+# Local overrides for docker-compose.yaml (may contain a database password)
+.env

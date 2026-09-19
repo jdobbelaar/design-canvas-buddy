@@ -1,0 +1,51 @@
+# The app (FastAPI serving the built frontend) plus the Postgres it stores data in.
+#
+#   docker compose up --build        # then open http://localhost:8000
+#   docker compose down              # stop; data is kept in the pgdata volume
+#   docker compose down -v           # stop AND delete the database
+#
+# Optional overrides (shell environment or a .env file next to this one):
+#   APP_PORT           host port for the app (default 8000)
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+#
+# The database credentials below are development defaults. Postgres is not
+# published to the host, so only the app can reach it. If you publish it, or
+# deploy this anywhere shared, set a real POSTGRES_PASSWORD -- and keep it URL-safe
+# (letters/digits) or percent-encode it, since it is embedded in DATABASE_URL.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-designcanvas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-designcanvas}
+      POSTGRES_DB: ${POSTGRES_DB:-designcanvas}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no `ports:` -- that avoids clashing with any Postgres already
+    # on the host. To reach it from a DB client, add (loopback only):
+    #   ports: ["127.0.0.1:5434:5432"]
+    healthcheck:
+      # $$ defers expansion to the container, where these variables are set.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      # `postgres` is the service name above; Compose's network resolves it.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-designcanvas}:${POSTGRES_PASSWORD:-designcanvas}@postgres:5432/${POSTGRES_DB:-designcanvas}
+    depends_on:
+      postgres:
+        # The app creates its tables on startup and does not retry a refused
+        # connection, so wait until Postgres is actually accepting them.
+        condition: service_healthy
+
+volumes:
+  pgdata:
