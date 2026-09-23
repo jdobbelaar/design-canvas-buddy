@@ -2,11 +2,9 @@
 #
 #   backend-tests ─┐
 #   frontend-tests ┼─> integration-tests ─┐
-#   template-checks┘    e2e-tests ─────────┼─> deploy (main only) -> verifies /health
+#   template-checks┘    e2e-tests ─────────┴─> deploy-dev -> deploy-production (needs approval)
 #
-# Deploying needs one-time AWS setup: see deploy/aws/github-oidc.yaml. Until the
-# repository variable AWS_DEPLOY_ROLE_ARN is set, the deploy job is skipped and
-# everything before it still runs.
+# Deploying needs one-time AWS setup per environment: see deploy/aws/github-oidc.yaml.
 #
 # Actions are pinned to full commit SHAs (the comment names the release).
 
@@ -25,10 +23,6 @@ concurrency:
 
 permissions:
   contents: read
-
-env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-  STACK_NAME: design-canvas-buddy
 
 jobs:
   # ---- Stage 1: fast checks, all in parallel --------------------------------
@@ -162,101 +156,35 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # ---- Stage 3: deploy and verify -------------------------------------------
-  deploy:
-    name: Deploy to AWS
+  # ---- Stage 3: deploy and verify, dev first --------------------------------
+  # Only pushes to main deploy. Each job runs deploy.yml against one GitHub
+  # environment (see there); production additionally waits for a reviewer to
+  # approve, configured on that environment in the repository settings.
+  deploy-dev:
+    name: Deploy to dev
     needs: [integration-tests, e2e-tests]
-    # Only main; and only once the AWS side has been set up.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    # The role's trust policy only accepts tokens issued for this environment,
-    # so a fork, another branch, or a pull request cannot assume it.
-    environment:
-      name: production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
     permissions:
-      id-token: write # request the OIDC token exchanged for AWS credentials
+      id-token: write
       contents: read
-    # Never run two deploys at once, and never cancel one half-way through.
+    # Never run two deploys to one environment at once, or cancel one half-way.
     concurrency:
-      group: production-deploy
+      group: deploy-dev
       cancel-in-progress: false
-    steps:
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: deploy-${{ github.run_id }}
 
-      - name: Look up the server and its public URL
-        id: stack
-        run: |
-          outputs=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
-            --query 'Stacks[0].Outputs' --output json)
-          echo "instance_id=$(jq -r '.[] | select(.OutputKey=="InstanceId").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
-          echo "app_url=$(jq -r '.[] | select(.OutputKey=="AppUrl").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
-
-      - name: Deploy this commit on the server (AWS Systems Manager)
-        env:
-          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
-          SHA: ${{ github.sha }}
-        run: |
-          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $SHA"; exit 1; }
-          [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
-
-          # Fetch exactly this commit (not "whatever main is now"), then run the
-          # deploy script that ships with it.
-          cat > commands.json <<EOF
-          {"commands": [
-            "set -eu",
-            "cd /opt/app",
-            "git fetch --quiet origin $SHA",
-            "git checkout --quiet --force $SHA",
-            "GIT_SHA=$SHA bash deploy/aws/deploy.sh"
-          ]}
-          EOF
-
-          command_id=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name AWS-RunShellScript \
-            --comment "deploy $SHA" \
-            --timeout-seconds 900 \
-            --parameters file://commands.json \
-            --query Command.CommandId --output text)
-          echo "SSM command: $command_id"
-
-          # `aws ssm wait command-executed` gives up after ~100s, which is
-          # shorter than a build, so poll.
-          status=Pending
-          for _ in $(seq 1 120); do
-            sleep 10
-            status=$(aws ssm get-command-invocation --command-id "$command_id" \
-              --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
-            echo "status: $status"
-            case "$status" in Success|Failed|Cancelled|TimedOut|Cancelling) break ;; esac
-          done
-
-          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
-            --query '{stdout: StandardOutputContent, stderr: StandardErrorContent}' --output json \
-            | jq -r '"----- stdout -----", .stdout, "----- stderr -----", .stderr'
-          [ "$status" = Success ] || { echo "::error::deploy command finished as $status"; exit 1; }
-
-      # The server checked itself; this checks what users actually reach:
-      # CloudFront -> the server -> the app -> the database.
-      - name: Verify the public /health endpoint reports this commit
-        env:
-          APP_URL: ${{ steps.stack.outputs.app_url }}
-          SHA: ${{ github.sha }}
-        run: |
-          for attempt in $(seq 1 30); do
-            body=$(curl -sS --max-time 10 "$APP_URL/health" || true)
-            echo "attempt $attempt: ${body:-<no response>}"
-            if jq -e --arg sha "$SHA" \
-                '.status == "ok" and .database == "ok" and .version == $sha' <<<"$body" > /dev/null 2>&1; then
-              echo "Deployed $SHA to $APP_URL and it is healthy."
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::error::$APP_URL/health never reported a healthy $SHA"
-          exit 1
+  deploy-production:
+    name: Deploy to production
+    needs: deploy-dev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false

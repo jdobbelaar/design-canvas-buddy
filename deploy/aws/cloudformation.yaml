@@ -58,6 +58,14 @@ Parameters:
       describe-managed-prefix-lists --region REGION --filters
       Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
 
+  ServerName:
+    Type: String
+    Default: design-canvas-buddy
+    Description: >-
+      The server's Name tag. The pipeline's deploy role may only send commands to
+      servers whose tag matches its own environment (see github-oidc.yaml), so
+      each environment's stack needs a different value, e.g. design-canvas-buddy-prod.
+
   InstanceProfileName:
     Type: String
     Default: ""
@@ -189,7 +197,7 @@ Resources:
         HttpTokens: required
         HttpEndpoint: enabled
       Tags:
-        - { Key: Name, Value: design-canvas-buddy }
+        - { Key: Name, Value: !Ref ServerName }
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash

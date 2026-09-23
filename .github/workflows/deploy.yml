@@ -1,0 +1,117 @@
+# Deploys the commit that triggered the pipeline to ONE environment, then
+# verifies the public /health endpoint reports that commit. Called from
+# pipeline.yml once per environment (dev, then production).
+#
+# Everything environment-specific comes from that GitHub environment's own
+# variables, so the same steps serve both:
+#   AWS_DEPLOY_ROLE_ARN   the role to assume (its trust policy only admits tokens
+#                         issued for that environment)
+#   STACK_NAME            the CloudFormation stack that holds the server
+
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment to deploy to (dev or production)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: ${{ inputs.environment }}
+    permissions:
+      id-token: write # request the OIDC token exchanged for AWS credentials
+      contents: read
+    env:
+      STACK_NAME: ${{ vars.STACK_NAME }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Look up the server and its public URL
+        id: stack
+        run: |
+          outputs=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' --output json)
+          echo "instance_id=$(jq -r '.[] | select(.OutputKey=="InstanceId").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
+          echo "app_url=$(jq -r '.[] | select(.OutputKey=="AppUrl").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy this commit on the server (AWS Systems Manager)
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $SHA"; exit 1; }
+          [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
+
+          # Fetch exactly this commit (not "whatever main is now"), then run the
+          # deploy script that ships with it.
+          cat > commands.json <<EOF
+          {"commands": [
+            "set -eu",
+            "cd /opt/app",
+            "git fetch --quiet origin $SHA",
+            "git checkout --quiet --force $SHA",
+            "GIT_SHA=$SHA bash deploy/aws/deploy.sh"
+          ]}
+          EOF
+
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy $SHA" \
+            --timeout-seconds 900 \
+            --parameters file://commands.json \
+            --query Command.CommandId --output text)
+          echo "SSM command: $command_id"
+
+          # `aws ssm wait command-executed` gives up after ~100s, which is
+          # shorter than a build, so poll.
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $status"
+            case "$status" in Success|Failed|Cancelled|TimedOut|Cancelling) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '{stdout: StandardOutputContent, stderr: StandardErrorContent}' --output json \
+            | jq -r '"----- stdout -----", .stdout, "----- stderr -----", .stderr'
+          [ "$status" = Success ] || { echo "::error::deploy command finished as $status"; exit 1; }
+
+      # The server checked itself; this checks what users actually reach:
+      # CloudFront -> the server -> the app -> the database.
+      - name: Verify the public /health endpoint reports this commit
+        env:
+          APP_URL: ${{ steps.stack.outputs.app_url }}
+          SHA: ${{ github.sha }}
+        run: |
+          for attempt in $(seq 1 30); do
+            body=$(curl -sS --max-time 10 "$APP_URL/health" || true)
+            echo "attempt $attempt: ${body:-<no response>}"
+            if jq -e --arg sha "$SHA" \
+                '.status == "ok" and .database == "ok" and .version == $sha' <<<"$body" > /dev/null 2>&1; then
+              echo "Deployed $SHA to $APP_URL and it is healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$APP_URL/health never reported a healthy $SHA"
+          exit 1

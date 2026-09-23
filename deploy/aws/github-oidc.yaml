@@ -1,31 +1,50 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Lets GitHub Actions deploy design-canvas-buddy: an OIDC identity provider, a
-  narrowly scoped deploy role that only the repository's "production"
-  environment can assume, and an instance profile for the server so it can
+  narrowly scoped deploy role that only one GitHub environment of the repository
+  can assume, and an instance profile for the server so it can
   receive deploy commands through AWS Systems Manager (no SSH, no stored keys).
 
-# One-time setup. Creating IAM resources needs administrator-level permissions
-# that the day-to-day deploy user should not keep, so run this as an admin (or
-# temporarily attach IAMFullAccess to that user, then detach it):
+# One stack of this template per environment. Creating IAM resources needs
+# administrator-level permissions that the day-to-day deploy user should not
+# keep, so run these as an admin (or temporarily attach IAMFullAccess to that
+# user, then detach it). Each environment also needs iam:PassRole for its own
+# server role on that user, or the server cannot be launched with it.
 #
+# dev (also creates the account-wide GitHub OIDC provider; there can be only one):
 #   aws cloudformation deploy --stack-name design-canvas-buddy-github \
-#     --template-file deploy/aws/github-oidc.yaml \
-#     --capabilities CAPABILITY_NAMED_IAM
+#     --template-file deploy/aws/github-oidc.yaml --capabilities CAPABILITY_NAMED_IAM
 #
-# If this AWS account already has a GitHub OIDC provider (there can be only one
-# per account), add:  --parameter-overrides CreateOidcProvider=false
+# prod (reuses the provider; its own roles, trusted only by the production environment):
+#   aws cloudformation deploy --stack-name design-canvas-buddy-github-prod \
+#     --template-file deploy/aws/github-oidc.yaml --capabilities CAPABILITY_NAMED_IAM \
+#     --parameter-overrides CreateOidcProvider=false NameSuffix=-prod \
+#     ServerName=design-canvas-buddy-prod GitHubEnvironment=production
 #
-# Then give the running server its role. Either redeploy the main stack with
-#   --parameter-overrides InstanceProfileName=<InstanceProfileName output>
-# or, without touching the stack, attach it directly:
-#   aws ec2 associate-iam-instance-profile --instance-id <InstanceId> \
-#     --iam-instance-profile Name=<InstanceProfileName output>
+# Then start the app stack with that environment's profile and server name, e.g. prod:
+#   aws cloudformation deploy --stack-name design-canvas-buddy-prod \
+#     --template-file deploy/aws/cloudformation.yaml --parameter-overrides \
+#     ServerName=design-canvas-buddy-prod InstanceProfileName=design-canvas-buddy-server-prod
 #
-# Finally, in GitHub, create an environment named "production" and set the
-# repository variable AWS_DEPLOY_ROLE_ARN to the DeployRoleArn output.
+# Finally, in GitHub, create an environment (dev / production) and give it the
+# variables AWS_DEPLOY_ROLE_ARN (this stack's DeployRoleArn output) and STACK_NAME.
 
 Parameters:
+  NameSuffix:
+    Type: String
+    Default: ""
+    Description: >-
+      Appended to the IAM role and profile names so environments do not collide:
+      empty for dev, -prod for production.
+
+  ServerName:
+    Type: String
+    Default: design-canvas-buddy
+    Description: >-
+      The Name tag of this environment's server (the ServerName parameter of
+      cloudformation.yaml). The deploy role can only send commands to servers
+      carrying it.
+
   GitHubSubject:
     Type: String
     Default: repo:jdobbelaar@7696911/design-canvas-buddy@1363452304
@@ -38,7 +57,7 @@ Parameters:
 
   GitHubEnvironment:
     Type: String
-    Default: production
+    Default: dev
     Description: Only workflow jobs running in this GitHub environment may assume the role.
 
   AppStackName:
@@ -66,7 +85,7 @@ Resources:
   DeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: design-canvas-buddy-github-deploy
+      RoleName: !Sub design-canvas-buddy-github-deploy${NameSuffix}
       Description: Assumed by GitHub Actions (OIDC) to deploy design-canvas-buddy.
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -104,7 +123,7 @@ Resources:
                 Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
                 Condition:
                   StringEquals:
-                    ssm:resourceTag/Name: design-canvas-buddy
+                    ssm:resourceTag/Name: !Ref ServerName
               - Sid: ReadCommandResults
                 Effect: Allow
                 Action:
@@ -116,7 +135,7 @@ Resources:
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: design-canvas-buddy-server
+      RoleName: !Sub design-canvas-buddy-server${NameSuffix}
       Description: Lets the server's SSM agent receive deploy commands.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -130,7 +149,7 @@ Resources:
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      InstanceProfileName: design-canvas-buddy-server
+      InstanceProfileName: !Sub design-canvas-buddy-server${NameSuffix}
       Roles: [!Ref InstanceRole]
 
 Outputs:
