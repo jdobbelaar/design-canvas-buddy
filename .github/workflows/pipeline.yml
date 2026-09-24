@@ -22,10 +22,13 @@ on:
     branches: [main]
   pull_request:
 
-# A newer push to a pull request supersedes a run that is still testing. On main
-# runs are never cancelled, so a push cannot kill a deploy half-way through.
+# A newer push to a pull request supersedes a run that is still testing. Runs on
+# main are independent (each has its own group), so a push can neither kill a
+# deploy half-way through nor queue behind an older run that is still waiting for
+# someone to approve production. What must not overlap is the deploys themselves,
+# and those have their own locks below.
 concurrency:
-  group: pipeline-${{ github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('pipeline-{0}', github.ref) || format('pipeline-run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
