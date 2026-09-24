@@ -1,0 +1,104 @@
+# Local observability stack, deliberately its own Compose project (own network,
+# own volumes) so it can be started, stopped, and wiped independently of the
+# application stack in ../docker-compose.yaml.
+#
+#   docker compose up -d               # from this directory, or: make observability-up
+#   docker compose down                # stop; data is kept in the named volumes
+#   docker compose down -v             # stop AND delete all collected telemetry
+#
+# Applications send OTLP to the collector (localhost:4318 for HTTP, :4317 for
+# gRPC). The application stack, being in another project, reaches it through the
+# host; see README.md.
+#
+# Optional overrides (shell environment or a .env file next to this one):
+#   GRAFANA_PORT (3000)  PROMETHEUS_PORT (9090)  LOKI_PORT (3100)  TEMPO_PORT (3200)
+#   OTLP_HTTP_PORT (4318)  OTLP_GRPC_PORT (4317)
+#   BIND_ADDRESS (127.0.0.1)   set to 0.0.0.0 to accept telemetry from other machines
+#
+# Everything is published on the loopback address only by default: Grafana here
+# runs without a login, and the collector accepts data from anyone who can reach it.
+
+name: observability
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector:0.161.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${OTLP_GRPC_PORT:-4317}:4317"
+      - "${BIND_ADDRESS:-127.0.0.1}:${OTLP_HTTP_PORT:-4318}:4318"
+    depends_on:
+      - tempo
+      - prometheus
+      - loki
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      # Metrics arrive from the collector over OTLP...
+      - --web.enable-otlp-receiver
+      # ...and Tempo writes the metrics it derives from traces.
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LOKI_PORT:-3100}:3100"
+
+  tempo:
+    image: grafana/tempo:3.0.3
+    restart: unless-stopped
+    command: ["-target=all", "-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${TEMPO_PORT:-3200}:3200"
+    depends_on:
+      - prometheus
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    restart: unless-stopped
+    environment:
+      # No login: fine for a local tool bound to loopback, not for anything shared.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/design-canvas-buddy.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+volumes:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:

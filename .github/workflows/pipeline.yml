@@ -95,7 +95,7 @@ jobs:
       - run: npm test
 
   template-checks:
-    name: Lint CloudFormation and deploy script
+    name: Lint infrastructure files
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -107,6 +107,15 @@ jobs:
         run: uvx cfn-lint deploy/aws/cloudformation.yaml deploy/aws/github-oidc.yaml
       - name: shellcheck
         run: shellcheck deploy/aws/deploy.sh
+      # The local observability stack: the Compose files parse, and the
+      # collector accepts its config (it rejects unknown components and typos).
+      - name: Compose files
+        run: |
+          docker compose -f docker-compose.yaml config --quiet
+          docker compose -f observability/docker-compose.yaml config --quiet
+      - name: OpenTelemetry Collector config
+        run: |
+          docker run --rm -v "$PWD/observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro"             otel/opentelemetry-collector:0.161.0 validate --config=/etc/otelcol/config.yaml
 
   # The image every later stage uses, built exactly once. Its tag is
   # YYYYMMDD-HHMMSS-shortsha (UTC build time, then the commit).

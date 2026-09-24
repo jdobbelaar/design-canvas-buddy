@@ -1,0 +1,60 @@
+# The single place applications send telemetry to (OTLP). It fans each signal out
+# to the store built for it:
+#
+#   traces  -> Tempo
+#   metrics -> Prometheus   (its native OTLP receiver)
+#   logs    -> Loki         (its native OTLP endpoint)
+#
+# Resource attributes (service.name, deployment.environment.name, service.version)
+# travel with every signal untouched; each store's own config decides which of
+# them become labels.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Drop data rather than run out of memory if a store falls behind.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch: {}
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  # The exporter appends /v1/metrics and /v1/logs to these base URLs.
+  otlp_http/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/loki]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

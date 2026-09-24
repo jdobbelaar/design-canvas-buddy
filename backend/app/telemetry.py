@@ -1,4 +1,4 @@
-"""OpenTelemetry: traces and metrics for the API, WebSockets, and database.
+"""OpenTelemetry: traces, metrics, and logs for the API, WebSockets, and database.
 
 Every span and metric carries the same three resource attributes, so telemetry
 from different deployments can be told apart:
@@ -11,14 +11,16 @@ from different deployments can be told apart:
 
 Exporting is opt-in, so nothing is sent (and nothing can fail) unless configured:
 
-    OTEL_EXPORTER_OTLP_ENDPOINT   e.g. http://collector:4318 -- traces and metrics
-                                  are sent there over OTLP/HTTP; the standard
-                                  OTEL_EXPORTER_OTLP_HEADERS etc. apply
+    OTEL_EXPORTER_OTLP_ENDPOINT   e.g. http://collector:4318 -- traces, metrics,
+                                  and logs are sent there over OTLP/HTTP; the
+                                  standard OTEL_EXPORTER_OTLP_HEADERS etc. apply
     OTEL_TRACES_EXPORTER          otlp | console | none   (default: otlp if an
     OTEL_METRICS_EXPORTER         otlp | console | none    endpoint is set, else none)
+    OTEL_LOGS_EXPORTER            otlp | console | none
     OTEL_SDK_DISABLED=true        no instrumentation at all
 
-`console` prints to stdout, which is handy when running locally.
+`console` prints to stdout, which is handy when running locally. Logs are the
+records of the `uvicorn` loggers (including the access log) and the root logger.
 """
 
 from __future__ import annotations
@@ -29,10 +31,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from fastapi import FastAPI, WebSocket
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler, LogRecordProcessor
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, ConsoleLogRecordExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (
     ConsoleMetricExporter,
@@ -53,6 +58,36 @@ DEPLOYMENT_ENVIRONMENT = "deployment.environment.name"
 # The container health check calls /health every 30 seconds; tracing it would
 # bury real traffic. (A regex, matched against the request URL.)
 UNTRACED_URLS = "/health$"
+
+# Loggers whose records are exported: the root logger, plus uvicorn's (its access
+# log in particular). uvicorn's usually do not propagate to the root logger, so
+# they need the handler themselves -- but only where a record would not already
+# reach it, or every line would be exported twice.
+LOGGERS = ("", "uvicorn", "uvicorn.access")
+
+
+def _reaches(logger: logging.Logger, handler: logging.Handler) -> bool:
+    """Would a record logged to `logger` already be handled by `handler`?"""
+    current: logging.Logger | None = logger
+    while current is not None:
+        if handler in current.handlers:
+            return True
+        current = current.parent if current.propagate else None
+    return False
+
+
+class DropHealthChecks(logging.Filter):
+    """Keeps the health check's access-log line (every 30 s) out of the exported logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        is_health_check = (
+            record.name == "uvicorn.access"
+            and isinstance(args, tuple)
+            and len(args) >= 3
+            and args[2] == "/health"
+        )
+        return not is_health_check
 
 
 def _setting(name: str, default: str) -> str:
@@ -98,9 +133,14 @@ class Telemetry:
 
     tracer_provider: TracerProvider | None = None
     meter_provider: MeterProvider | None = None
+    logger_provider: LoggerProvider | None = None
+    log_handler: logging.Handler | None = None
 
     def shutdown(self) -> None:
-        for provider in (self.tracer_provider, self.meter_provider):
+        if self.log_handler is not None:
+            for name in LOGGERS:
+                logging.getLogger(name).removeHandler(self.log_handler)
+        for provider in (self.tracer_provider, self.meter_provider, self.logger_provider):
             if provider is not None:
                 try:
                     provider.shutdown()
@@ -114,11 +154,12 @@ def configure_telemetry(
     *,
     span_processors: Sequence[SpanProcessor] = (),
     metric_readers: Sequence[MetricReader] = (),
+    log_processors: Sequence[LogRecordProcessor] = (),
 ) -> Telemetry:
     """Instrument `app` (HTTP and WebSocket requests) and `engine` (queries).
 
-    `span_processors` and `metric_readers` are added to whatever the environment
-    configures; the tests use them to capture telemetry in memory.
+    `span_processors`, `metric_readers` and `log_processors` are added to whatever
+    the environment configures; the tests use them to capture telemetry in memory.
     """
     if os.environ.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
         return Telemetry()
@@ -148,6 +189,27 @@ def configure_telemetry(
         readers.append(PeriodicExportingMetricReader(ConsoleMetricExporter()))
     meter_provider = MeterProvider(resource=resource, metric_readers=readers)
 
+    logger_provider = LoggerProvider(resource=resource)
+    log_processors_list: list[LogRecordProcessor] = list(log_processors)
+    kind = _exporter_kind(
+        "OTEL_LOGS_EXPORTER",
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"),
+    )
+    if kind == "otlp":
+        log_processors_list.append(BatchLogRecordProcessor(OTLPLogExporter()))
+    elif kind == "console":
+        log_processors_list.append(BatchLogRecordProcessor(ConsoleLogRecordExporter()))
+    log_handler: logging.Handler | None = None
+    if log_processors_list:
+        for processor in log_processors_list:
+            logger_provider.add_log_record_processor(processor)
+        log_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+        log_handler.addFilter(DropHealthChecks())
+        for name in LOGGERS:
+            logger = logging.getLogger(name)
+            if not _reaches(logger, log_handler):
+                logger.addHandler(log_handler)
+
     FastAPIInstrumentor.instrument_app(
         app,
         tracer_provider=tracer_provider,
@@ -170,4 +232,9 @@ def configure_telemetry(
             meter_provider=meter_provider,
         )
 
-    return Telemetry(tracer_provider=tracer_provider, meter_provider=meter_provider)
+    return Telemetry(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        logger_provider=logger_provider,
+        log_handler=log_handler,
+    )

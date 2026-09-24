@@ -1,7 +1,7 @@
 .PHONY: help install install-backend install-frontend install-e2e \
 	dev backend frontend \
 	test test-backend test-frontend test-integration test-e2e e2e \
-	lint format clean
+	lint format clean observability-up observability-down
 
 help:
 	@echo "Targets:"
@@ -15,6 +15,8 @@ help:
 	@echo "  make e2e              Install what the e2e tests need, then run them (needs Docker)"
 	@echo "  make test-e2e         Just run the e2e tests (after make install-e2e)"
 	@echo "  make test-frontend    Run frontend tests (vitest)"
+	@echo "  make observability-up    Start Grafana, Prometheus, Loki, Tempo, and the collector (needs Docker)"
+	@echo "  make observability-down  Stop them (data is kept; see observability/README.md)"
 	@echo "  make lint             Lint the frontend"
 	@echo "  make format           Format the frontend"
 	@echo "  make clean            Remove backend/frontend build & cache artifacts"
@@ -57,6 +59,14 @@ test-e2e:
 # directory, and without it `make e2e` sees an existing file with no rule and
 # silently does nothing ("Nothing to be done for `e2e'").
 e2e: install-e2e test-e2e
+
+# A separate Compose project from the app; see observability/README.md.
+observability-up:
+	docker compose -f observability/docker-compose.yaml up -d
+	@echo "Grafana: http://localhost:3000   OTLP endpoint for apps: http://localhost:4318"
+
+observability-down:
+	docker compose -f observability/docker-compose.yaml down
 
 lint:
 	cd frontend && npm run lint

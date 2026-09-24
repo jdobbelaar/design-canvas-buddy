@@ -8,7 +8,7 @@
 #   APP_PORT           host port for the app (default 8000)
 #   APP_IMAGE          run this prebuilt image instead of building (CI, servers)
 #   APP_ENVIRONMENT    which deployment this is, reported in telemetry (default local)
-#   OTEL_EXPORTER_OTLP_ENDPOINT  send traces and metrics here (default: not exported)
+#   OTEL_EXPORTER_OTLP_ENDPOINT  send traces, metrics, and logs here (default: not exported)
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
 #
 # The database credentials below are development defaults. Postgres is not
@@ -50,6 +50,10 @@ services:
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8000}:8000"
+    extra_hosts:
+      # Lets the app reach the separate observability stack (observability/) on
+      # the host, as http://host.docker.internal:4318, on Linux as well as Docker Desktop.
+      - "host.docker.internal:host-gateway"
     environment:
       # `postgres` is the service name above; Compose's network resolves it.
       DATABASE_URL: postgresql://${POSTGRES_USER:-designcanvas}:${POSTGRES_PASSWORD:-designcanvas}@postgres:5432/${POSTGRES_DB:-designcanvas}

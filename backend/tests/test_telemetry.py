@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -18,9 +21,11 @@ ENV_VARS = (
     "OTEL_SDK_DISABLED",
     "OTEL_TRACES_EXPORTER",
     "OTEL_METRICS_EXPORTER",
+    "OTEL_LOGS_EXPORTER",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
     "APP_ENVIRONMENT",
     "APP_VERSION",
 )
@@ -97,22 +102,34 @@ def telemetry(monkeypatch):
     SQLAlchemyInstrumentor().uninstrument()
     spans = InMemorySpanExporter()
     metrics = InMemoryMetricReader()
+    logs = InMemoryLogRecordExporter()
     app = create_app(
         database_url="sqlite+aiosqlite:///:memory:",
         with_seed_data=False,
         telemetry_kwargs={
             "span_processors": [SimpleSpanProcessor(spans)],
             "metric_readers": [metrics],
+            "log_processors": [SimpleLogRecordProcessor(logs)],
         },
     )
-    with TestClient(app) as client:
-        # Creating the tables at startup was traced too; tests want only what
-        # they do themselves.
-        spans.clear()
-        client.spans = spans
-        client.metrics = metrics
-        yield client
-    SQLAlchemyInstrumentor().uninstrument()
+    # uvicorn sets these to INFO when it starts; nothing does under pytest.
+    levels = {}
+    for name in ("uvicorn.error", "uvicorn.access"):
+        levels[name] = logging.getLogger(name).level
+        logging.getLogger(name).setLevel(logging.INFO)
+    try:
+        with TestClient(app) as client:
+            # Creating the tables at startup was traced too; tests want only what
+            # they do themselves.
+            spans.clear()
+            client.spans = spans
+            client.metrics = metrics
+            client.logs = logs
+            yield client
+    finally:
+        for name, level in levels.items():
+            logging.getLogger(name).setLevel(level)
+        SQLAlchemyInstrumentor().uninstrument()
 
 
 def test_a_request_produces_a_server_span_tagged_with_service_environment_and_version(telemetry):
@@ -182,6 +199,43 @@ def test_a_websocket_connection_is_one_named_span_not_one_per_message(telemetry)
     assert server[0].resource.attributes["deployment.environment.name"] == "test-env"
     # No per-message "receive"/"send" spans; only the connection and its queries.
     assert {s.kind for s in spans} == {SpanKind.SERVER, SpanKind.CLIENT}
+
+
+def test_logs_carry_the_same_resource(telemetry):
+    log = logging.getLogger("uvicorn.error")
+    log.info("something happened")
+
+    records = telemetry.logs.get_finished_logs()
+    assert [r.log_record.body for r in records] == ["something happened"]
+    assert dict(records[0].resource.attributes).items() >= {
+        "service.name": "design-canvas-buddy",
+        "deployment.environment.name": "test-env",
+        "service.version": "20260101-000000-abc1234",
+    }.items()
+
+
+def test_access_logs_are_exported_except_for_the_health_check(telemetry):
+    access = logging.getLogger("uvicorn.access")
+    access.info('%s - "%s %s HTTP/%s" %d', "1.2.3.4:5", "GET", "/health", "1.1", 200)
+    access.info('%s - "%s %s HTTP/%s" %d', "1.2.3.4:5", "POST", "/sessions", "1.1", 201)
+
+    bodies = [r.log_record.body for r in telemetry.logs.get_finished_logs()]
+    assert len(bodies) == 1 and "/sessions" in bodies[0]
+
+
+def test_log_handlers_are_removed_when_the_app_shuts_down():
+    def handler_count():
+        return sum(len(logging.getLogger(n).handlers) for n in ("", "uvicorn", "uvicorn.access"))
+
+    before = handler_count()
+    app = create_app(
+        database_url="sqlite+aiosqlite:///:memory:",
+        with_seed_data=False,
+        telemetry_kwargs={"log_processors": [SimpleLogRecordProcessor(InMemoryLogRecordExporter())]},
+    )
+    with TestClient(app):
+        assert handler_count() > before
+    assert handler_count() == before
 
 
 def test_sdk_disabled_leaves_the_app_uninstrumented(monkeypatch):
