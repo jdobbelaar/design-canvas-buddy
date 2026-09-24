@@ -129,9 +129,12 @@ class Stack:
 
     def up(self, *, build: bool = False) -> None:
         args = ["up", "-d", "--wait", "--wait-timeout", "180"]
-        # --no-build makes a missing prebuilt image an error rather than a quiet
-        # rebuild of something other than what CI is about to ship.
-        args.append("--build" if build else "--no-build")
+        if os.environ.get("APP_IMAGE"):
+            # CI tests the exact image it will ship. --no-build makes a missing
+            # one an error rather than a quiet rebuild of something else.
+            args.append("--no-build")
+        elif build:
+            args.append("--build")
         try:
             self.compose(*args, timeout=1200)
         except RuntimeError as exc:

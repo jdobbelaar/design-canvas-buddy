@@ -62,9 +62,11 @@ jobs:
         env:
           INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
           TAG: ${{ inputs.image_tag }}
+          ENVIRONMENT: ${{ inputs.environment }}
           GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$TAG" =~ ^[0-9]{8}-[0-9]{6}-[0-9a-f]{7}$ ]] || { echo "unexpected image tag: $TAG"; exit 1; }
+          [[ "$ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "unexpected environment name: $ENVIRONMENT"; exit 1; }
           [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
 
           # The compose file and deploy script on the server must be the ones
@@ -82,7 +84,7 @@ jobs:
             "cd /opt/app",
             "git fetch --quiet origin $SHA",
             "git checkout --quiet --force $SHA",
-            "APP_IMAGE=$IMAGE APP_VERSION=$TAG bash deploy/aws/deploy.sh"
+            "APP_IMAGE=$IMAGE APP_VERSION=$TAG APP_ENVIRONMENT=$ENVIRONMENT bash deploy/aws/deploy.sh"
           ]}
           EOF
 

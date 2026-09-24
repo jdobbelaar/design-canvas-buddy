@@ -4,7 +4,8 @@
 # Pulls a prebuilt image from the registry (ECR) and starts it; nothing is built
 # here. Succeeds only if /health reports that exact image tag as running.
 #
-#   APP_IMAGE=<registry>/design-canvas-buddy:<tag> APP_VERSION=<tag> bash deploy/aws/deploy.sh
+#   APP_IMAGE=<registry>/design-canvas-buddy:<tag> APP_VERSION=<tag> \
+#     APP_ENVIRONMENT=<dev|production> bash deploy/aws/deploy.sh
 #
 # Postgres is left running: its data lives in a Docker volume and is untouched.
 # The app container is replaced, so open WebSockets drop for a few seconds and
@@ -13,6 +14,7 @@ set -euo pipefail
 
 : "${APP_IMAGE:?APP_IMAGE must be the full image reference to run}"
 : "${APP_VERSION:?APP_VERSION must be the image tag being deployed}"
+: "${APP_ENVIRONMENT:?APP_ENVIRONMENT must name this deployment (dev, production)}"
 cd /opt/app
 
 # One deploy at a time: a second pipeline run, or a person on the server.
@@ -33,15 +35,20 @@ region=$(cut -d. -f4 <<<"$registry")
 echo "==> logging in to $registry"
 aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$registry"
 
-# Remember the image in .env so a later plain `docker compose up -d` (a reboot
-# recovery, someone on the server) runs this image rather than trying to build.
+# Remember these in .env so a later plain `docker compose up -d` (a reboot
+# recovery, someone on the server) runs this image, as this environment, rather
+# than trying to build.
 touch .env
-grep -v '^APP_IMAGE=' .env > .env.new || true
-echo "APP_IMAGE=$APP_IMAGE" >> .env.new
-chmod --reference=.env .env.new
-mv .env.new .env
+set_env() {
+  grep -v "^$1=" .env > .env.new || true
+  echo "$1=$2" >> .env.new
+  chmod --reference=.env .env.new
+  mv .env.new .env
+}
+set_env APP_IMAGE "$APP_IMAGE"
+set_env APP_ENVIRONMENT "$APP_ENVIRONMENT"
 
-export APP_IMAGE
+export APP_IMAGE APP_ENVIRONMENT
 echo "==> pulling $APP_IMAGE"
 docker compose pull app
 echo "==> starting $APP_VERSION"

@@ -7,6 +7,8 @@
 # Optional overrides (shell environment or a .env file next to this one):
 #   APP_PORT           host port for the app (default 8000)
 #   APP_IMAGE          run this prebuilt image instead of building (CI, servers)
+#   APP_ENVIRONMENT    which deployment this is, reported in telemetry (default local)
+#   OTEL_EXPORTER_OTLP_ENDPOINT  send traces and metrics here (default: not exported)
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
 #
 # The database credentials below are development defaults. Postgres is not
@@ -51,6 +53,11 @@ services:
     environment:
       # `postgres` is the service name above; Compose's network resolves it.
       DATABASE_URL: postgresql://${POSTGRES_USER:-designcanvas}:${POSTGRES_PASSWORD:-designcanvas}@postgres:5432/${POSTGRES_DB:-designcanvas}
+      # Telemetry (backend/app/telemetry.py) is tagged with these and the image's
+      # version. Nothing is exported unless an OTLP endpoint is set.
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
     depends_on:
       postgres:
         # The app creates its tables on startup and does not retry a refused

@@ -14,6 +14,7 @@ from app.db import create_engine, database_url_from_env, init_db, make_sessionma
 from app.routers import auth, health, sessions, ws
 from app.seed import seed
 from app.spa import mount_frontend
+from app.telemetry import configure_telemetry
 
 load_dotenv()
 
@@ -24,6 +25,7 @@ def create_app(
     with_seed_data: bool = True,
     frontend_dir: str | None = None,
     engine_kwargs: dict[str, object] | None = None,
+    telemetry_kwargs: dict[str, object] | None = None,
 ) -> FastAPI:
     engine = create_engine(database_url or database_url_from_env(), **(engine_kwargs or {}))
     sessionmaker = make_sessionmaker(engine)
@@ -36,6 +38,8 @@ def create_app(
                 await seed(db)
         yield
         await engine.dispose()
+        # Last, so spans from the shutdown above are flushed too.
+        _app.state.telemetry.shutdown()
 
     app = FastAPI(
         title="System Design Interview — Collaboration Backend",
@@ -50,6 +54,7 @@ def create_app(
         allow_headers=["*"],
     )
 
+    app.state.telemetry = configure_telemetry(app, engine, **(telemetry_kwargs or {}))
     app.state.db_engine = engine
     app.state.db_sessionmaker = sessionmaker
 

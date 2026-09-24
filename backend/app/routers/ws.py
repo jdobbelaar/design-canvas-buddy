@@ -37,6 +37,7 @@ from app.models import (
     ServerEventPresence,
     ServerEventSnapshot,
 )
+from app.telemetry import name_websocket_span
 
 router = APIRouter(tags=["collaboration"])
 
@@ -129,6 +130,7 @@ async def _apply_ops(
 
 @router.websocket("/ws/{session_id}")
 async def collaborate(websocket: WebSocket, session_id: str) -> None:
+    name_websocket_span(websocket)
     sessionmaker: async_sessionmaker = websocket.app.state.db_sessionmaker
     await websocket.accept()
 

@@ -7,6 +7,7 @@ import os
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from sqlalchemy import text
 
 from app.models import HealthResponse
@@ -25,9 +26,13 @@ DB_CHECK_TIMEOUT = 5
 async def health(request: Request) -> JSONResponse:
     version = os.environ.get("APP_VERSION", "dev")
     try:
-        async with asyncio.timeout(DB_CHECK_TIMEOUT):
-            async with request.app.state.db_sessionmaker() as db:
-                await db.execute(text("SELECT 1"))
+        # The check runs every 30 seconds; its request span is already skipped
+        # (app.telemetry.UNTRACED_URLS), and this stops its query from showing up
+        # in the traces as an orphan span.
+        with suppress_instrumentation():
+            async with asyncio.timeout(DB_CHECK_TIMEOUT):
+                async with request.app.state.db_sessionmaker() as db:
+                    await db.execute(text("SELECT 1"))
     except Exception:  # noqa: BLE001 -- any failure means "not healthy"; don't leak details
         body = HealthResponse(status="unhealthy", database="unreachable", version=version)
         return JSONResponse(body.model_dump(), status_code=503)
