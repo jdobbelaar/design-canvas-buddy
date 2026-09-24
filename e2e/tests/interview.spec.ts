@@ -95,12 +95,16 @@ test('the interviewer sees a change the candidate makes to the canvas', async ({
       await expect(seenByInterviewer).toBeVisible();
 
       // In the same place, not merely somewhere: both start with the same view.
+      // These are two different pages whose layouts differ by a pixel or two
+      // (measured up to about 2 px), while a misplaced element would be off by
+      // hundreds, so allow a few pixels of slack.
+      const tolerancePx = 5;
       const [theirs, mine] = await Promise.all([
         canvasOf(candidate.page).getByText('Database').boundingBox(),
         seenByInterviewer.boundingBox(),
       ]);
-      expect(Math.abs(theirs!.x - mine!.x)).toBeLessThan(2);
-      expect(Math.abs(theirs!.y - mine!.y)).toBeLessThan(2);
+      expect(Math.abs(theirs!.x - mine!.x)).toBeLessThan(tolerancePx);
+      expect(Math.abs(theirs!.y - mine!.y)).toBeLessThan(tolerancePx);
     });
 
     expect(interviewer.uncaughtErrors, 'interviewer page errors').toEqual([]);

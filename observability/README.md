@@ -69,6 +69,23 @@ Grafana opens on the **Design Canvas Buddy** dashboard: request rate and latency
 server errors, which versions are reporting, recent traces, and logs. Log lines
 link to their trace, and a trace's spans link back to its logs.
 
+### Application metrics
+
+The backend counts what happens in the product itself. All of them carry the
+environment and deployed version (as Prometheus labels), and the dashboard's
+**Interview activity** panel plots them together:
+
+| Metric (Prometheus name) | What it counts |
+|---|---|
+| `interview_rooms_created_total` | Interview rooms created |
+| `interview_participants_active` | Participants connected right now (a gauge) |
+| `canvas_elements_created_total{element_type}` | Elements newly added to a canvas, by kind: a shape's kind (`database`, `loadbalancer`, ...), `text`, `draw`, `connector`. Re-adding an element a room already has is not a creation |
+| `canvas_element_creation_failures_total{reason}` | Elements that could not be created: `invalid` (the message did not validate), `id_conflict` (the id belongs to another room), `error` (the server failed) |
+
+The **Environment** and **Version** selectors at the top of the dashboard filter
+every panel; the version list only offers versions seen in the chosen environment.
+Both accept several values, e.g. to compare the old and new version around a deploy.
+
 How the tags become things you can filter on:
 
 | Store | Environment | Version | Example |

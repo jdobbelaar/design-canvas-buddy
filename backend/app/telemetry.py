@@ -27,16 +27,19 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from typing import get_args
+from dataclasses import dataclass, field
 
 from fastapi import FastAPI, WebSocket
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.logging.handler import LoggingHandler
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler, LogRecordProcessor
+from opentelemetry.metrics import Counter, Meter, NoOpMeterProvider, Observation
+from opentelemetry.sdk._logs import LoggerProvider, LogRecordProcessor
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, ConsoleLogRecordExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (
@@ -49,6 +52,8 @@ from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 from opentelemetry.trace import get_current_span
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+from app.models import ShapeKind
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +118,72 @@ def _exporter_kind(variable: str, endpoint_vars: Sequence[str]) -> str:
     return "otlp" if any(os.environ.get(v) for v in endpoint_vars) else "none"
 
 
+# The values of the `element.type` and `reason` attributes, spelled out so every
+# series can be started at zero (see AppMetrics).
+ELEMENT_TYPES = (*get_args(ShapeKind), "text", "draw", "connector")
+FAILURE_REASONS = ("invalid", "id_conflict", "error")
+
+
+class AppMetrics:
+    """What the application itself counts, as opposed to what the framework reports.
+
+    All of them carry the resource attributes (service, environment, version) like
+    every other signal, so any of them can be filtered by environment or version.
+
+    `interview.rooms.created`             interview rooms (sessions) created
+    `interview.participants.active`       participants connected right now
+    `canvas.elements.created`             elements newly added to a canvas, by
+                                          `element.type` (a shape's kind, e.g.
+                                          database, else text/draw/connector); a
+                                          re-add of an element the room already has
+                                          is not a creation
+    `canvas.element.creation.failures`    elements that could not be added, by
+                                          `reason`: invalid (the message did not
+                                          validate), id_conflict (the id belongs to
+                                          another room), error (the server failed)
+    """
+
+    def __init__(self, meter: Meter, active_participants: Callable[[], int]) -> None:
+        self.rooms_created: Counter = meter.create_counter(
+            "interview.rooms.created",
+            unit="{room}",
+            description="Interview rooms created",
+        )
+        # Observed when metrics are collected rather than incremented and
+        # decremented as people come and go, so it cannot drift from the truth.
+        meter.create_observable_up_down_counter(
+            "interview.participants.active",
+            callbacks=[lambda _options: [Observation(active_participants())]],
+            unit="{participant}",
+            description="Participants connected to interview rooms right now",
+        )
+        self.elements_created: Counter = meter.create_counter(
+            "canvas.elements.created",
+            unit="{element}",
+            description="Canvas elements created",
+        )
+        self.element_creation_failures: Counter = meter.create_counter(
+            "canvas.element.creation.failures",
+            unit="{element}",
+            description="Canvas elements that could not be created",
+        )
+
+        # A counter's series only exists once something has been added to it, so
+        # the first event ever would arrive as a series that starts at 1 -- and
+        # Prometheus, having no earlier sample to compare with, would see no
+        # increase and rate() would miss it. Start every series at 0 instead.
+        self.rooms_created.add(0)
+        for element_type in ELEMENT_TYPES:
+            self.elements_created.add(0, {"element.type": element_type})
+        for reason in FAILURE_REASONS:
+            self.element_creation_failures.add(0, {"reason": reason})
+
+    @classmethod
+    def noop(cls) -> AppMetrics:
+        """Instruments that record nothing, for when telemetry is disabled."""
+        return cls(NoOpMeterProvider().get_meter(DEFAULT_SERVICE_NAME), lambda: 0)
+
+
 def name_websocket_span(websocket: WebSocket) -> None:
     """Give the connection's span a useful name, e.g. "WEBSOCKET /ws/{session_id}".
 
@@ -135,6 +206,7 @@ class Telemetry:
     meter_provider: MeterProvider | None = None
     logger_provider: LoggerProvider | None = None
     log_handler: logging.Handler | None = None
+    metrics: AppMetrics = field(default_factory=AppMetrics.noop)
 
     def shutdown(self) -> None:
         if self.log_handler is not None:
@@ -155,6 +227,7 @@ def configure_telemetry(
     span_processors: Sequence[SpanProcessor] = (),
     metric_readers: Sequence[MetricReader] = (),
     log_processors: Sequence[LogRecordProcessor] = (),
+    active_participants: Callable[[], int] = lambda: 0,
 ) -> Telemetry:
     """Instrument `app` (HTTP and WebSocket requests) and `engine` (queries).
 
@@ -237,4 +310,5 @@ def configure_telemetry(
         meter_provider=meter_provider,
         logger_provider=logger_provider,
         log_handler=log_handler,
+        metrics=AppMetrics(meter_provider.get_meter(DEFAULT_SERVICE_NAME), active_participants),
     )

@@ -16,10 +16,16 @@ name must contain "test" (enforced below).
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import pytest
 from fastapi.testclient import TestClient
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy.pool import NullPool
 
 from app.db import init_db, normalize_database_url
@@ -126,3 +132,52 @@ def run_db(app, coro_factory):
             return await coro_factory(db)
 
     return asyncio.run(_run())
+
+
+@pytest.fixture
+def telemetry(monkeypatch):
+    """A client for an app whose spans, metrics, and logs are captured in memory.
+
+    The environment and version are fixed, to check they reach the telemetry."""
+    # Whatever the developer's shell exports must not reach real exporters.
+    for name in (
+        "OTEL_SERVICE_NAME", "OTEL_SDK_DISABLED", "OTEL_TRACES_EXPORTER",
+        "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER", "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("APP_ENVIRONMENT", "test-env")
+    monkeypatch.setenv("APP_VERSION", "20260101-000000-abc1234")
+
+    # The SQLAlchemy instrumentor is process-wide and instruments once; start
+    # fresh so it attaches to this app's providers.
+    SQLAlchemyInstrumentor().uninstrument()
+    spans = InMemorySpanExporter()
+    metrics = InMemoryMetricReader()
+    logs = InMemoryLogRecordExporter()
+    app = create_app(
+        database_url="sqlite+aiosqlite:///:memory:",
+        with_seed_data=False,
+        telemetry_kwargs={
+            "span_processors": [SimpleSpanProcessor(spans)],
+            "metric_readers": [metrics],
+            "log_processors": [SimpleLogRecordProcessor(logs)],
+        },
+    )
+    # uvicorn sets these to INFO when it starts; nothing does under pytest.
+    levels = {}
+    for name in ("uvicorn.error", "uvicorn.access"):
+        levels[name] = logging.getLogger(name).level
+        logging.getLogger(name).setLevel(logging.INFO)
+    try:
+        with TestClient(app) as client:
+            # Creating the tables at startup was traced too; tests want only what
+            # they do themselves.
+            spans.clear()
+            client.spans = spans
+            client.metrics = metrics
+            client.logs = logs
+            yield client
+    finally:
+        for name, level in levels.items():
+            logging.getLogger(name).setLevel(level)
+        SQLAlchemyInstrumentor().uninstrument()

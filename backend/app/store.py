@@ -9,6 +9,7 @@ seam. Each function takes the request's `AsyncSession` (see app/db.py's
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,7 +86,26 @@ async def get_session_objects(db: AsyncSession, session_id: str) -> list[dict]:
     return [row.data for row in result.scalars()]
 
 
-async def add_objects(db: AsyncSession, session_id: str, objects: list[dict]) -> None:
+def _element_kind(obj: dict) -> str:
+    kind = obj.get("kind") if obj.get("type") == "shape" else obj.get("type")
+    return str(kind or "unknown")
+
+
+@dataclass
+class AddOutcome:
+    """What `add_objects` did with the objects it was given."""
+
+    # What each object that is new to the session is: the kind of a shape
+    # ("database", "loadbalancer", ...), otherwise its type ("text", "connector", ...).
+    created: list[str] = field(default_factory=list)
+    # Objects not added because their id already belongs to another session.
+    conflicts: int = 0
+
+
+async def add_objects(db: AsyncSession, session_id: str, objects: list[dict]) -> AddOutcome:
+    """Add objects to a session. Re-adding one the session already has replaces it
+    in place (neither created nor a conflict)."""
+    outcome = AddOutcome()
     next_seq = await db.scalar(
         select(func.coalesce(func.max(BoardObjectRecord.seq), 0)).where(
             BoardObjectRecord.session_id == session_id
@@ -96,10 +116,14 @@ async def add_objects(db: AsyncSession, session_id: str, objects: list[dict]) ->
         if record is None:
             next_seq += 1
             db.add(BoardObjectRecord(id=obj["id"], session_id=session_id, seq=next_seq, data=obj))
+            outcome.created.append(_element_kind(obj))
         elif record.session_id == session_id:
             record.data = obj  # re-adding an existing object keeps its place
-        # else: the id belongs to another session; never touch that object.
+        else:
+            # The id belongs to another session; never touch that object.
+            outcome.conflicts += 1
     await db.commit()
+    return outcome
 
 
 async def update_objects(

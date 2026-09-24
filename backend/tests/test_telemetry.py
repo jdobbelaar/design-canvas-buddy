@@ -6,9 +6,7 @@ import logging
 
 import pytest
 from fastapi.testclient import TestClient
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
@@ -89,47 +87,6 @@ def test_an_explicit_exporter_wins_over_the_endpoint(monkeypatch):
 
 
 # ---- what an instrumented app records --------------------------------------
-
-
-@pytest.fixture
-def telemetry(monkeypatch):
-    """A client for an app whose spans and metrics are captured in memory."""
-    monkeypatch.setenv("APP_ENVIRONMENT", "test-env")
-    monkeypatch.setenv("APP_VERSION", "20260101-000000-abc1234")
-
-    # The SQLAlchemy instrumentor is process-wide and instruments once; start
-    # fresh so it attaches to this app's providers.
-    SQLAlchemyInstrumentor().uninstrument()
-    spans = InMemorySpanExporter()
-    metrics = InMemoryMetricReader()
-    logs = InMemoryLogRecordExporter()
-    app = create_app(
-        database_url="sqlite+aiosqlite:///:memory:",
-        with_seed_data=False,
-        telemetry_kwargs={
-            "span_processors": [SimpleSpanProcessor(spans)],
-            "metric_readers": [metrics],
-            "log_processors": [SimpleLogRecordProcessor(logs)],
-        },
-    )
-    # uvicorn sets these to INFO when it starts; nothing does under pytest.
-    levels = {}
-    for name in ("uvicorn.error", "uvicorn.access"):
-        levels[name] = logging.getLogger(name).level
-        logging.getLogger(name).setLevel(logging.INFO)
-    try:
-        with TestClient(app) as client:
-            # Creating the tables at startup was traced too; tests want only what
-            # they do themselves.
-            spans.clear()
-            client.spans = spans
-            client.metrics = metrics
-            client.logs = logs
-            yield client
-    finally:
-        for name, level in levels.items():
-            logging.getLogger(name).setLevel(level)
-        SQLAlchemyInstrumentor().uninstrument()
 
 
 def test_a_request_produces_a_server_span_tagged_with_service_environment_and_version(telemetry):

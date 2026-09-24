@@ -37,7 +37,7 @@ from app.models import (
     ServerEventPresence,
     ServerEventSnapshot,
 )
-from app.telemetry import name_websocket_span
+from app.telemetry import AppMetrics, name_websocket_span
 
 router = APIRouter(tags=["collaboration"])
 
@@ -70,6 +70,9 @@ class ConnectionManager:
 
     def add(self, session_id: str, participant_id: str, websocket: WebSocket) -> None:
         self._connections.setdefault(session_id, {})[participant_id] = websocket
+
+    def participant_count(self) -> int:
+        return sum(len(participants) for participants in self._connections.values())
 
     def remove(self, session_id: str, participant_id: str) -> None:
         self._connections.get(session_id, {}).pop(participant_id, None)
@@ -113,14 +116,44 @@ def _presence_for(presence: LivePresence, recipient_id: str) -> ServerEventPrese
     )
 
 
+def active_participants() -> int:
+    """Participants connected right now, across all rooms (a telemetry gauge)."""
+    return manager.participant_count()
+
+
+def _count_rejected_adds(raw: object, metrics: AppMetrics) -> None:
+    """A message that failed validation may still have been asking to add elements;
+    count those as failed creations. Tolerates any shape of payload."""
+    if not isinstance(raw, dict) or raw.get("type") != "ops" or not isinstance(raw.get("ops"), list):
+        return
+    for op in raw["ops"]:
+        if isinstance(op, dict) and op.get("op") == "add":
+            objects = op.get("objects")
+            count = len(objects) if isinstance(objects, list) and objects else 1
+            metrics.element_creation_failures.add(count, {"reason": "invalid"})
+
+
 async def _apply_ops(
-    sessionmaker: async_sessionmaker, session_id: str, ops: list[BoardOp]
+    sessionmaker: async_sessionmaker,
+    session_id: str,
+    ops: list[BoardOp],
+    metrics: AppMetrics,
 ) -> None:
     async with sessionmaker() as db:
         for op in ops:
             if isinstance(op, BoardOpAdd):
                 dumped = [obj.model_dump(by_alias=True) for obj in op.objects]
-                await store.add_objects(db, session_id, dumped)
+                try:
+                    outcome = await store.add_objects(db, session_id, dumped)
+                except Exception:
+                    metrics.element_creation_failures.add(len(dumped), {"reason": "error"})
+                    raise
+                for element_type in outcome.created:
+                    metrics.elements_created.add(1, {"element.type": element_type})
+                if outcome.conflicts:
+                    metrics.element_creation_failures.add(
+                        outcome.conflicts, {"reason": "id_conflict"}
+                    )
             elif isinstance(op, BoardOpUpdate):
                 updates = [(update.id, update.patch) for update in op.updates]
                 await store.update_objects(db, session_id, updates)
@@ -177,13 +210,16 @@ async def collaborate(websocket: WebSocket, session_id: str) -> None:
                 event: ClientEvent = _client_event_adapter.validate_python(raw)
             except ValidationError:
                 # Ignore malformed messages rather than dropping the connection.
+                _count_rejected_adds(raw, websocket.app.state.telemetry.metrics)
                 continue
 
             if isinstance(event, ClientEventLeave):
                 await websocket.close()
                 break
             elif isinstance(event, ClientEventOps):
-                await _apply_ops(sessionmaker, session_id, event.ops)
+                await _apply_ops(
+                    sessionmaker, session_id, event.ops, websocket.app.state.telemetry.metrics
+                )
                 await manager.broadcast(
                     session_id,
                     ServerEventOps(from_=event.from_, ops=event.ops),

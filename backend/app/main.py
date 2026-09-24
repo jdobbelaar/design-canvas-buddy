@@ -54,7 +54,9 @@ def create_app(
         allow_headers=["*"],
     )
 
-    app.state.telemetry = configure_telemetry(app, engine, **(telemetry_kwargs or {}))
+    app.state.telemetry = configure_telemetry(
+        app, engine, active_participants=ws.active_participants, **(telemetry_kwargs or {})
+    )
     app.state.db_engine = engine
     app.state.db_sessionmaker = sessionmaker
 

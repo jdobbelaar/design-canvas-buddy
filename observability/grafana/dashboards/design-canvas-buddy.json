@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -24,13 +24,37 @@
         },
         "query": {
           "query": "label_values(http_server_active_requests, deployment_environment_name)",
-          "refId": "env"
+          "refId": "environment"
         },
         "definition": "label_values(http_server_active_requests, deployment_environment_name)",
         "refresh": 2,
         "includeAll": true,
         "allValue": ".*",
-        "multi": false,
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "version",
+        "label": "Version",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(http_server_active_requests{deployment_environment_name=~\"$environment\"}, service_version)",
+          "refId": "version"
+        },
+        "definition": "label_values(http_server_active_requests{deployment_environment_name=~\"$environment\"}, service_version)",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
         "current": {
           "selected": true,
           "text": "All",
@@ -61,7 +85,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\"}[$__rate_interval]))",
+          "expr": "sum(rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval]))",
           "refId": "A",
           "editorMode": "code"
         }
@@ -94,7 +118,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\",http_status_code=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\"}[$__rate_interval]))",
+          "expr": "(sum(rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\", service_version=~\"$version\", http_status_code=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval]))",
           "refId": "A",
           "editorMode": "code"
         }
@@ -144,7 +168,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "group by (deployment_environment_name, service_version) (http_server_active_requests{deployment_environment_name=~\"$environment\"})",
+          "expr": "group by (deployment_environment_name, service_version) (http_server_active_requests{deployment_environment_name=~\"$environment\", service_version=~\"$version\"})",
           "refId": "A",
           "editorMode": "code",
           "instant": true,
@@ -169,6 +193,136 @@
       ]
     },
     {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Interview activity",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Rooms, elements and failures are rates (per minute, left axis). Active participants is how many people are connected right now (right axis). Filtered by the Environment and Version selectors above. \"Component\" failures are elements that could not be created: an invalid message, an id that belongs to another room, or a server error.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(interview_rooms_created_total{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval])) or vector(0)) * 60",
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "Rooms created / min"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(canvas_elements_created_total{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval])) or vector(0)) * 60",
+          "refId": "B",
+          "editorMode": "code",
+          "legendFormat": "Elements created / min"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(canvas_element_creation_failures_total{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval])) or vector(0)) * 60",
+          "refId": "C",
+          "editorMode": "code",
+          "legendFormat": "Component creation failures / min"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(interview_participants_active{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}) or vector(0)",
+          "refId": "D",
+          "editorMode": "code",
+          "legendFormat": "Active participants"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Active participants"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Component creation failures / min"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": 4,
       "type": "timeseries",
       "title": "Requests per second by status",
@@ -180,7 +334,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 13
       },
       "targets": [
         {
@@ -188,7 +342,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (http_status_code) (rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\"}[$__rate_interval]))",
+          "expr": "sum by (http_status_code) (rate(http_server_duration_milliseconds_count{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval]))",
           "refId": "A",
           "editorMode": "code",
           "legendFormat": "{{http_status_code}}"
@@ -216,7 +370,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 13
       },
       "targets": [
         {
@@ -224,7 +378,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval])))",
           "refId": "A",
           "editorMode": "code",
           "legendFormat": "p50"
@@ -234,7 +388,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval])))",
           "refId": "B",
           "editorMode": "code",
           "legendFormat": "p95"
@@ -244,7 +398,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval])))",
           "refId": "C",
           "editorMode": "code",
           "legendFormat": "p99"
@@ -270,7 +424,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 21
       },
       "targets": [
         {
@@ -282,7 +436,7 @@
           "queryType": "traceql",
           "limit": 20,
           "tableType": "traces",
-          "query": "{resource.service.name=\"design-canvas-buddy\" && resource.deployment.environment.name=~\"$environment\"}"
+          "query": "{resource.service.name=\"design-canvas-buddy\" && resource.deployment.environment.name=~\"$environment\" && resource.service.version=~\"$version\"}"
         }
       ]
     },
@@ -299,7 +453,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 30
       },
       "options": {
         "showTime": true,
@@ -316,7 +470,7 @@
           "refId": "A",
           "queryType": "range",
           "editorMode": "code",
-          "expr": "{service_name=\"design-canvas-buddy\", deployment_environment_name=~\"$environment\"}"
+          "expr": "{service_name=\"design-canvas-buddy\", deployment_environment_name=~\"$environment\"} | service_version=~\"$version\""
         }
       ]
     }
