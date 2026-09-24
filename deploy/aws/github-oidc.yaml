@@ -19,7 +19,8 @@ Description: >-
 #   aws cloudformation deploy --stack-name design-canvas-buddy-github-prod \
 #     --template-file deploy/aws/github-oidc.yaml --capabilities CAPABILITY_NAMED_IAM \
 #     --parameter-overrides CreateOidcProvider=false NameSuffix=-prod \
-#     ServerName=design-canvas-buddy-prod GitHubEnvironment=production \n#     AppStackName=design-canvas-buddy-prod
+#     ServerName=design-canvas-buddy-prod GitHubEnvironment=production \
+#     AppStackName=design-canvas-buddy-prod
 #
 # Then start the app stack with that environment's profile and server name, e.g. prod:
 #   aws cloudformation deploy --stack-name design-canvas-buddy-prod \
