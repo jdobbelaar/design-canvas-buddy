@@ -6,6 +6,7 @@
 #
 # Optional overrides (shell environment or a .env file next to this one):
 #   APP_PORT           host port for the app (default 8000)
+#   APP_IMAGE          run this prebuilt image instead of building (CI, servers)
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
 #
 # The database credentials below are development defaults. Postgres is not
@@ -34,11 +35,16 @@ services:
       retries: 10
 
   app:
+    # Locally this builds from source and tags the result design-canvas-buddy:local.
+    # CI and the servers set APP_IMAGE to an image already built and pushed to the
+    # registry (ECR) and run it with `--no-build`, so what is deployed is exactly
+    # what was tested.
+    image: ${APP_IMAGE:-design-canvas-buddy:local}
     build:
       context: .
       args:
         # Reported by GET /health, so a deploy can prove which build is running.
-        GIT_SHA: ${GIT_SHA:-dev}
+        APP_VERSION: ${APP_VERSION:-dev}
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8000}:8000"

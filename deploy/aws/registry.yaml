@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Container registry for design-canvas-buddy: one ECR repository shared by every
+  environment (dev and production pull the same image, which is what promotion
+  relies on), and the role GitHub Actions uses to push to it.
+
+# One-time setup, once for the whole account (not per environment). It needs ECR
+# and IAM permissions that the day-to-day deploy user should not keep, so
+# temporarily attach IAMFullAccess and AmazonEC2ContainerRegistryFullAccess to
+# that user, run this, then detach them. The GitHub OIDC provider must already
+# exist (github-oidc.yaml creates it).
+#
+#   aws cloudformation deploy --stack-name design-canvas-buddy-registry \
+#     --template-file deploy/aws/registry.yaml --capabilities CAPABILITY_NAMED_IAM
+#
+# Then set the repository (not environment) variable AWS_BUILD_ROLE_ARN in GitHub
+# to the BuildRoleArn output. The servers' permission to pull from this repository
+# is granted in github-oidc.yaml, one stack per environment.
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: design-canvas-buddy
+
+  GitHubSubject:
+    Type: String
+    Default: repo:jdobbelaar@7696911/design-canvas-buddy@1363452304
+    Description: >-
+      The repository part of the GitHub token subject; see the parameter of the
+      same name in github-oidc.yaml.
+
+  KeepImages:
+    Type: Number
+    Default: 60
+    MinValue: 10
+    Description: >-
+      How many of the newest images to keep; older ones are deleted so the
+      repository does not grow (and bill) forever. Keep this comfortably larger
+      than the number of builds that can happen between two production
+      promotions, or the image production runs could expire.
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      # A tag names one image forever, so "the version in production" cannot
+      # silently change underneath a deploy.
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {"rules": [{
+            "rulePriority": 1,
+            "description": "Keep only the newest ${KeepImages} images",
+            "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": ${KeepImages}},
+            "action": {"type": "expire"}
+          }]}
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: design-canvas-buddy-github-build
+      Description: Assumed by GitHub Actions (OIDC) on main to push images to ECR.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Only runs on the main branch of this repository. Pull requests,
+                # forks and other branches cannot push images.
+                token.actions.githubusercontent.com:sub: !Sub ${GitHubSubject}:ref:refs/heads/main
+      Policies:
+        - PolicyName: push-image
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Login
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushToThisRepositoryOnly
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !GetAtt Repository.Arn
+
+Outputs:
+  BuildRoleArn:
+    Description: Set this as the GitHub repository variable AWS_BUILD_ROLE_ARN.
+    Value: !GetAtt BuildRole.Arn
+  RepositoryUri:
+    Value: !GetAtt Repository.RepositoryUri

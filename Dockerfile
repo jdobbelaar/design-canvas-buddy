@@ -55,11 +55,13 @@ ENV FRONTEND_DIR=/app/static \
 VOLUME /data
 EXPOSE 8000
 
-# Which build this is, reported by GET /health so a deploy can check that the new
-# version is the one serving. Declared this late on purpose: an ARG that changes
-# on every commit invalidates every layer after it, so nothing expensive follows.
-ARG GIT_SHA=dev
-ENV APP_VERSION=${GIT_SHA}
+# Which build this is: the image tag CI gives it (YYYYMMDD-HHMMSS-shortsha), or
+# "dev" for a local build. GET /health reports it so a deploy can check that the
+# new version is the one serving. Declared this late on purpose: an ARG that
+# changes on every build invalidates every layer after it, so nothing expensive
+# follows.
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
 
 # /health also checks the database, so "healthy" means the app can actually serve.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

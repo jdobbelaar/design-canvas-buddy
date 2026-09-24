@@ -1,14 +1,15 @@
-# Manually promotes whatever is running in dev to production.
+# Manually promotes the image currently deployed in dev to production.
 #
 #   Actions -> promote -> Run workflow (from main)
 #
-# It asks dev's public /health which commit it is serving, checks that dev is
-# healthy and that the commit is on main, then deploys exactly that commit to
+# It asks dev's public /health which image tag dev is serving, checks that dev is
+# healthy and that the image is in the registry, then deploys that same image to
 # production with deploy.yml (same steps, and the same required-reviewer
-# approval on the production environment, as the automatic pipeline).
+# approval on the production environment, as the automatic pipeline). Nothing is
+# rebuilt: production runs the very image dev is running.
 #
-# This is deliberately "what dev runs right now", not "the latest main": if
-# main has moved on since the last dev deploy, the newer commit is not promoted.
+# This is deliberately "what dev runs right now", not "the latest main": if main
+# has moved on since the last dev deploy, the newer image is not promoted.
 
 name: promote
 
@@ -24,7 +25,7 @@ concurrency:
 
 jobs:
   resolve:
-    name: Find the version running in dev
+    name: Find the image running in dev
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -34,10 +35,10 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      sha: ${{ steps.dev.outputs.sha }}
+      tag: ${{ steps.dev.outputs.tag }}
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      GH_TOKEN: ${{ github.token }}
+      IMAGE_NAME: design-canvas-buddy
     steps:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -45,7 +46,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: promote-resolve-${{ github.run_id }}
 
-      - name: Ask dev which commit it is running
+      - name: Ask dev which image it is running
         id: dev
         env:
           STACK_NAME: ${{ vars.STACK_NAME }}
@@ -57,20 +58,17 @@ jobs:
 
           jq -e '.status == "ok" and .database == "ok"' <<<"$body" > /dev/null \
             || { echo "::error::dev is not healthy; refusing to promote it"; exit 1; }
-          sha=$(jq -r '.version' <<<"$body")
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::dev reports '$sha', not a commit id (never deployed by the pipeline?)"; exit 1; }
+          tag=$(jq -r '.version' <<<"$body")
+          [[ "$tag" =~ ^[0-9]{8}-[0-9]{6}-[0-9a-f]{7}$ ]] \
+            || { echo "::error::dev reports '$tag', not an image tag (has the pipeline deployed dev yet?)"; exit 1; }
 
-          # Only promote commits that are on main, i.e. went through review and
-          # the pipeline's tests.
-          state=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$sha" --jq .status)
-          case "$state" in
-            identical|behind) ;;
-            *) echo "::error::$sha is not on main (compare says: $state)"; exit 1 ;;
-          esac
+          # Only images the pipeline built, tested and pushed exist in the
+          # registry, so this is also the check that the image is a real release.
+          aws ecr describe-images --repository-name "$IMAGE_NAME" --image-ids "imageTag=$tag" > /dev/null \
+            || { echo "::error::image $tag is not in the registry"; exit 1; }
 
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Promoting $sha from dev to production." >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Promoting image $tag from dev to production." >> "$GITHUB_STEP_SUMMARY"
 
   production:
     name: Deploy to production
@@ -78,7 +76,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: production
-      sha: ${{ needs.resolve.outputs.sha }}
+      image_tag: ${{ needs.resolve.outputs.tag }}
     permissions:
       id-token: write
       contents: read

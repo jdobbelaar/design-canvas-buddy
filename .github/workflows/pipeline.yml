@@ -1,10 +1,17 @@
-# CI/CD: test -> test the built Docker Compose stack -> deploy to AWS -> verify.
+# CI/CD: test -> build one image -> test that image -> push it to ECR -> deploy it.
 #
-#   backend-tests ─┐
-#   frontend-tests ┼─> integration-tests ─┐
-#   template-checks┘    e2e-tests ─────────┴─> deploy-dev -> deploy-production (needs approval)
+#   backend-tests ──┐
+#   frontend-tests ─┤
+#   template-checks ┼─> integration-tests ─┐
+#   build-image ────┘    e2e-tests ─────────┴─> publish-image -> deploy-dev -> deploy-production (approval)
 #
-# Deploying needs one-time AWS setup per environment: see deploy/aws/github-oidc.yaml.
+# The image is built once (build-image), the integration and end-to-end tests run
+# against that very image, and only if they pass is it pushed to the registry
+# (publish-image) and deployed. The servers pull it; nothing is built there.
+# Production runs the same image dev did, never a rebuild of it.
+#
+# Deploying needs one-time AWS setup: see deploy/aws/github-oidc.yaml (per
+# environment) and deploy/aws/registry.yaml (once).
 #
 # Actions are pinned to full commit SHAs (the comment names the release).
 
@@ -15,11 +22,14 @@ on:
     branches: [main]
   pull_request:
 
-# A newer push to the same branch/PR supersedes a run that is still testing.
-# (Deploys have their own, non-cancelling group below.)
+# A newer push to a pull request supersedes a run that is still testing. On main
+# runs are never cancelled, so a push cannot kill a deploy half-way through.
 concurrency:
   group: pipeline-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: design-canvas-buddy
 
 permissions:
   contents: read
@@ -98,20 +108,56 @@ jobs:
       - name: shellcheck
         run: shellcheck deploy/aws/deploy.sh
 
-  # ---- Stage 2: the real Docker Compose stack -------------------------------
-  # Each job builds the image itself (GIT_SHA is baked in and reported by
-  # /health) and runs against its own throwaway stack.
-  integration-tests:
-    name: Integration tests (Docker Compose)
-    needs: [backend-tests, frontend-tests, template-checks]
+  # The image every later stage uses, built exactly once. Its tag is
+  # YYYYMMDD-HHMMSS-shortsha (UTC build time, then the commit).
+  build-image:
+    name: Build image
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      GIT_SHA: ${{ github.sha }}
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Work out the tag
+        id: tag
+        run: echo "tag=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Build
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: docker build --build-arg "APP_VERSION=$TAG" --tag "$IMAGE_NAME:$TAG" .
+      - name: Save the image for the jobs that test and publish it
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: docker save "$IMAGE_NAME:$TAG" | gzip -1 > image.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image
+          path: image.tar.gz
+          compression-level: 0 # already gzipped
+          retention-days: 3
+
+  # ---- Stage 2: the built image, run as a real Docker Compose stack ---------
+  # Both jobs load the image built above and run docker-compose.yaml against it
+  # (APP_IMAGE makes compose use it instead of building), so what is tested is
+  # byte-for-byte what gets shipped.
+  integration-tests:
+    name: Integration tests (Docker Compose)
+    needs: [backend-tests, frontend-tests, template-checks, build-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_IMAGE: design-canvas-buddy:${{ needs.build-image.outputs.tag }}
+      APP_VERSION: ${{ needs.build-image.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image
+      - run: gunzip -c image.tar.gz | docker load
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
@@ -123,11 +169,12 @@ jobs:
 
   e2e-tests:
     name: End-to-end tests (Playwright, Docker Compose)
-    needs: [backend-tests, frontend-tests, template-checks]
+    needs: [backend-tests, frontend-tests, template-checks, build-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GIT_SHA: ${{ github.sha }}
+      APP_IMAGE: design-canvas-buddy:${{ needs.build-image.outputs.tag }}
+      APP_VERSION: ${{ needs.build-image.outputs.tag }}
     defaults:
       run:
         working-directory: e2e
@@ -135,6 +182,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image
+          path: ${{ github.workspace }}
+      - run: gunzip -c "$GITHUB_WORKSPACE/image.tar.gz" | docker load
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -156,17 +208,52 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # ---- Stage 3: deploy and verify, dev first --------------------------------
-  # Only pushes to main deploy. Each job runs deploy.yml against one GitHub
-  # environment (see there); production additionally waits for a reviewer to
-  # approve, configured on that environment in the repository settings.
+  # ---- Stage 3: push the tested image to the registry (main only) -----------
+  publish-image:
+    name: Push image to ECR
+    needs: [build-image, integration-tests, e2e-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write # request the OIDC token exchanged for AWS credentials
+      contents: read
+    outputs:
+      tag: ${{ needs.build-image.outputs.tag }}
+    env:
+      TAG: ${{ needs.build-image.outputs.tag }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image
+      - run: gunzip -c image.tar.gz | docker load
+      # The build role trusts only this repository's main branch (registry.yaml).
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: publish-${{ github.run_id }}
+      - name: Push
+        run: |
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry="$account.dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          docker tag "$IMAGE_NAME:$TAG" "$registry/$IMAGE_NAME:$TAG"
+          docker push "$registry/$IMAGE_NAME:$TAG"
+          echo "Pushed $registry/$IMAGE_NAME:$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- Stage 4: deploy that image, dev first --------------------------------
+  # Each job runs deploy.yml against one GitHub environment (see there);
+  # production additionally waits for a reviewer to approve, configured on that
+  # environment in the repository settings.
   deploy-dev:
     name: Deploy to dev
-    needs: [integration-tests, e2e-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: publish-image
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev
+      image_tag: ${{ needs.publish-image.outputs.tag }}
     permissions:
       id-token: write
       contents: read
@@ -177,11 +264,11 @@ jobs:
 
   deploy-production:
     name: Deploy to production
-    needs: deploy-dev
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [publish-image, deploy-dev]
     uses: ./.github/workflows/deploy.yml
     with:
       environment: production
+      image_tag: ${{ needs.publish-image.outputs.tag }}
     permissions:
       id-token: write
       contents: read

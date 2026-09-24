@@ -70,10 +70,11 @@ def test_demo_data_was_seeded_exactly_once(stack):
 
 
 def test_health_reports_the_build_that_is_running(stack):
-    # CI builds with GIT_SHA=<commit>; the deploy pipeline relies on /health
-    # echoing that back to prove the *new* version is the one serving. Locally
-    # nothing is set and the build reports "dev".
-    expected = os.environ.get("GIT_SHA") or "dev"
+    # CI builds the image once, tagged YYYYMMDD-HHMMSS-shortsha, and sets
+    # APP_VERSION to that tag; the deploy pipeline relies on /health echoing it
+    # back to prove the *new* version is the one serving. Locally nothing is set
+    # and the build reports "dev".
+    expected = os.environ.get("APP_VERSION") or "dev"
     assert stack.http.get("/health").json() == {
         "status": "ok",
         "database": "ok",

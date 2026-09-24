@@ -43,7 +43,10 @@ export default async function globalSetup(): Promise<(() => void) | void> {
     `\nStarting the docker compose stack "${project}" on port ${port} ` +
       '(the first run builds the image and can take a few minutes)...',
   );
-  const up = compose('up', '-d', '--build', '--wait', '--wait-timeout', '180');
+  // CI tests the exact image it will ship: APP_IMAGE names one that is already
+  // loaded, so nothing is rebuilt.
+  const build = process.env.APP_IMAGE ? ['--no-build'] : ['--build'];
+  const up = compose('up', '-d', ...build, '--wait', '--wait-timeout', '180');
   if (up.status !== 0) {
     const logs = compose('logs', '--tail', '60').stdout;
     compose('down', '-v', '--rmi', 'local', '--remove-orphans');

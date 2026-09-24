@@ -3,7 +3,8 @@ Description: >-
   Lets GitHub Actions deploy design-canvas-buddy: an OIDC identity provider, a
   narrowly scoped deploy role that only one GitHub environment of the repository
   can assume, and an instance profile for the server so it can
-  receive deploy commands through AWS Systems Manager (no SSH, no stored keys).
+  receive deploy commands through AWS Systems Manager (no SSH, no stored keys) and
+  pull its image from ECR.
 
 # One stack of this template per environment. Creating IAM resources needs
 # administrator-level permissions that the day-to-day deploy user should not
@@ -27,10 +28,17 @@ Description: >-
 #     --template-file deploy/aws/cloudformation.yaml --parameter-overrides \
 #     ServerName=design-canvas-buddy-prod InstanceProfileName=design-canvas-buddy-server-prod
 #
+# Once for the account, create the image registry (see registry.yaml).
+#
 # Finally, in GitHub, create an environment (dev / production) and give it the
 # variables AWS_DEPLOY_ROLE_ARN (this stack's DeployRoleArn output) and STACK_NAME.
 
 Parameters:
+  RepositoryName:
+    Type: String
+    Default: design-canvas-buddy
+    Description: The ECR repository (registry.yaml) the server pulls its image from.
+
   NameSuffix:
     Type: String
     Default: ""
@@ -114,6 +122,10 @@ Resources:
                 Effect: Allow
                 Action: cloudformation:DescribeStacks
                 Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*
+              - Sid: CheckTheImageExists
+                Effect: Allow
+                Action: ecr:DescribeImages
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryName}
               - Sid: RunTheShellDocument
                 Effect: Allow
                 Action: ssm:SendCommand
@@ -146,6 +158,23 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        # The server pulls the image it runs from the registry with this role.
+        - PolicyName: pull-image
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Login
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullFromThisRepositoryOnly
+                Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryName}
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile

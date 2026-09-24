@@ -129,8 +129,9 @@ class Stack:
 
     def up(self, *, build: bool = False) -> None:
         args = ["up", "-d", "--wait", "--wait-timeout", "180"]
-        if build:
-            args.append("--build")
+        # --no-build makes a missing prebuilt image an error rather than a quiet
+        # rebuild of something other than what CI is about to ship.
+        args.append("--build" if build else "--no-build")
         try:
             self.compose(*args, timeout=1200)
         except RuntimeError as exc:
@@ -192,7 +193,9 @@ def running_stack(credentials: dict[str, str] | None = None) -> Iterator[Stack]:
         env_file.write_text("")
         stack = Stack(f"dcb-it-{uuid.uuid4().hex[:8]}", _free_port(), str(env_file), creds)
         try:
-            stack.up(build=True)
+            # CI tests the exact image it will ship: APP_IMAGE names one that is
+            # already loaded, so nothing is rebuilt.
+            stack.up(build=not os.environ.get("APP_IMAGE"))
             stack.wait_for_api()
             yield stack
         finally:

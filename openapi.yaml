@@ -45,8 +45,8 @@ paths:
         Used by deploy pipelines and load balancers. Needs no authentication.
         Returns 200 when the database answers a trivial query, and 503 when it
         is unreachable or hangs (the check gives up after a few seconds).
-        `version` is the git commit SHA the running image was built from (or
-        `dev` for a local build), so a deploy can verify that the new version --
+        `version` is the tag of the image that is running (YYYYMMDD-HHMMSS-shortsha,
+        or `dev` for a local build), so a deploy can verify that the new version --
         not merely *some* version -- is serving.
       security: []
       responses:

@@ -1,7 +1,8 @@
-# Deploys one commit (the input `sha`, or else the one that triggered the
-# calling workflow) to ONE environment, then verifies the public /health
-# endpoint reports that commit. Called from pipeline.yml once per environment
-# (dev, then production) and from promote.yml (dev's commit -> production).
+# Deploys one image (already in the registry) to ONE environment: the server
+# pulls it from ECR and starts it, nothing is built. Then verifies the public
+# /health endpoint reports that image's tag. Called from pipeline.yml once per
+# environment (dev, then production) and from promote.yml (dev's image ->
+# production).
 #
 # Everything environment-specific comes from that GitHub environment's own
 # variables, so the same steps serve both:
@@ -18,11 +19,10 @@ on:
         description: GitHub environment to deploy to (dev or production)
         required: true
         type: string
-      sha:
-        description: Full commit id to deploy. Empty means the commit that triggered the calling workflow.
-        required: false
+      image_tag:
+        description: Tag of the image to deploy, YYYYMMDD-HHMMSS-shortsha.
+        required: true
         type: string
-        default: ""
 
 permissions:
   contents: read
@@ -42,6 +42,7 @@ jobs:
       contents: read
     env:
       STACK_NAME: ${{ vars.STACK_NAME }}
+      IMAGE_NAME: design-canvas-buddy
     steps:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -57,30 +58,38 @@ jobs:
           echo "instance_id=$(jq -r '.[] | select(.OutputKey=="InstanceId").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
           echo "app_url=$(jq -r '.[] | select(.OutputKey=="AppUrl").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy this commit on the server (AWS Systems Manager)
+      - name: Deploy the image on the server (AWS Systems Manager)
         env:
           INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
-          SHA: ${{ inputs.sha || github.sha }}
+          TAG: ${{ inputs.image_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $SHA"; exit 1; }
+          [[ "$TAG" =~ ^[0-9]{8}-[0-9]{6}-[0-9a-f]{7}$ ]] || { echo "unexpected image tag: $TAG"; exit 1; }
           [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
 
-          # Fetch exactly this commit (not "whatever main is now"), then run the
-          # deploy script that ships with it.
+          # The compose file and deploy script on the server must be the ones
+          # that belong to this image, so check out the commit it was built from
+          # (the last part of the tag), not "whatever main is now".
+          SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/${TAG##*-}" --jq .sha)
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "could not resolve the commit for $TAG"; exit 1; }
+          account=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE="$account.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:$TAG"
+          echo "Deploying $IMAGE (commit $SHA) to $INSTANCE_ID"
+
           cat > commands.json <<EOF
           {"commands": [
             "set -eu",
             "cd /opt/app",
             "git fetch --quiet origin $SHA",
             "git checkout --quiet --force $SHA",
-            "GIT_SHA=$SHA bash deploy/aws/deploy.sh"
+            "APP_IMAGE=$IMAGE APP_VERSION=$TAG bash deploy/aws/deploy.sh"
           ]}
           EOF
 
           command_id=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
-            --comment "deploy $SHA" \
+            --comment "deploy $TAG" \
             --timeout-seconds 900 \
             --parameters file://commands.json \
             --query Command.CommandId --output text)
@@ -104,20 +113,20 @@ jobs:
 
       # The server checked itself; this checks what users actually reach:
       # CloudFront -> the server -> the app -> the database.
-      - name: Verify the public /health endpoint reports this commit
+      - name: Verify the public /health endpoint reports this image
         env:
           APP_URL: ${{ steps.stack.outputs.app_url }}
-          SHA: ${{ inputs.sha || github.sha }}
+          TAG: ${{ inputs.image_tag }}
         run: |
           for attempt in $(seq 1 30); do
             body=$(curl -sS --max-time 10 "$APP_URL/health" || true)
             echo "attempt $attempt: ${body:-<no response>}"
-            if jq -e --arg sha "$SHA" \
-                '.status == "ok" and .database == "ok" and .version == $sha' <<<"$body" > /dev/null 2>&1; then
-              echo "Deployed $SHA to $APP_URL and it is healthy."
+            if jq -e --arg tag "$TAG" \
+                '.status == "ok" and .database == "ok" and .version == $tag' <<<"$body" > /dev/null 2>&1; then
+              echo "Deployed $TAG to $APP_URL and it is healthy."
               exit 0
             fi
             sleep 10
           done
-          echo "::error::$APP_URL/health never reported a healthy $SHA"
+          echo "::error::$APP_URL/health never reported a healthy $TAG"
           exit 1
