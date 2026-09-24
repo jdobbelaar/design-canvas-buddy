@@ -1,0 +1,88 @@
+# Manually promotes whatever is running in dev to production.
+#
+#   Actions -> promote -> Run workflow (from main)
+#
+# It asks dev's public /health which commit it is serving, checks that dev is
+# healthy and that the commit is on main, then deploys exactly that commit to
+# production with deploy.yml (same steps, and the same required-reviewer
+# approval on the production environment, as the automatic pipeline).
+#
+# This is deliberately "what dev runs right now", not "the latest main": if
+# main has moved on since the last dev deploy, the newer commit is not promoted.
+
+name: promote
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Find the version running in dev
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: dev
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      sha: ${{ steps.dev.outputs.sha }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: promote-resolve-${{ github.run_id }}
+
+      - name: Ask dev which commit it is running
+        id: dev
+        env:
+          STACK_NAME: ${{ vars.STACK_NAME }}
+        run: |
+          url=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='AppUrl'].OutputValue" --output text)
+          body=$(curl -sS --max-time 10 "$url/health" || true)
+          echo "dev ($url) says: ${body:-<no response>}"
+
+          jq -e '.status == "ok" and .database == "ok"' <<<"$body" > /dev/null \
+            || { echo "::error::dev is not healthy; refusing to promote it"; exit 1; }
+          sha=$(jq -r '.version' <<<"$body")
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::dev reports '$sha', not a commit id (never deployed by the pipeline?)"; exit 1; }
+
+          # Only promote commits that are on main, i.e. went through review and
+          # the pipeline's tests.
+          state=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$sha" --jq .status)
+          case "$state" in
+            identical|behind) ;;
+            *) echo "::error::$sha is not on main (compare says: $state)"; exit 1 ;;
+          esac
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Promoting $sha from dev to production." >> "$GITHUB_STEP_SUMMARY"
+
+  production:
+    name: Deploy to production
+    needs: resolve
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      sha: ${{ needs.resolve.outputs.sha }}
+    permissions:
+      id-token: write
+      contents: read
+    # Shared with the automatic pipeline: never two production deploys at once.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false

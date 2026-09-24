@@ -1,6 +1,7 @@
-# Deploys the commit that triggered the pipeline to ONE environment, then
-# verifies the public /health endpoint reports that commit. Called from
-# pipeline.yml once per environment (dev, then production).
+# Deploys one commit (the input `sha`, or else the one that triggered the
+# calling workflow) to ONE environment, then verifies the public /health
+# endpoint reports that commit. Called from pipeline.yml once per environment
+# (dev, then production) and from promote.yml (dev's commit -> production).
 #
 # Everything environment-specific comes from that GitHub environment's own
 # variables, so the same steps serve both:
@@ -17,6 +18,11 @@ on:
         description: GitHub environment to deploy to (dev or production)
         required: true
         type: string
+      sha:
+        description: Full commit id to deploy. Empty means the commit that triggered the calling workflow.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -54,7 +60,7 @@ jobs:
       - name: Deploy this commit on the server (AWS Systems Manager)
         env:
           INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ inputs.sha || github.sha }}
         run: |
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $SHA"; exit 1; }
           [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
@@ -101,7 +107,7 @@ jobs:
       - name: Verify the public /health endpoint reports this commit
         env:
           APP_URL: ${{ steps.stack.outputs.app_url }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ inputs.sha || github.sha }}
         run: |
           for attempt in $(seq 1 30); do
             body=$(curl -sS --max-time 10 "$APP_URL/health" || true)
