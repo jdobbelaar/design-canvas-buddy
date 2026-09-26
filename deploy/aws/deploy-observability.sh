@@ -103,6 +103,14 @@ done
   || { echo "Grafana allows anonymous access" >&2; exit 1; }
 echo "authentication is enforced"
 
+# The alert must be loaded: an alert that silently is not there is worse than none.
+# (The password goes through stdin, not the command line, so it is not in `ps`.)
+rule_status=$(printf 'user = "admin:%s"\n' "$grafana_password" \
+  | curl -sS -K - -o /dev/null -w '%{http_code}' \
+    http://localhost:3000/api/v1/provisioning/alert-rules/canvas-creation-failures)
+[ "$rule_status" = 200 ] || { echo "the alert rule was not loaded (HTTP $rule_status)" >&2; exit 1; }
+echo "alert rule is loaded"
+
 # Keep the disk from filling over many deploys: drop images nothing uses that
 # are over a week old.
 docker image prune -af --filter "until=168h" > /dev/null

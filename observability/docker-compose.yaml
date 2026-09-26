@@ -90,6 +90,10 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/design-canvas-buddy.json
+      # Where Grafana is reached. Alerts link back to the dashboard with it, so it
+      # must be the address a person receiving the alert can open. (On AWS,
+      # docker-compose.aws.yaml makes this the public CloudFront address.)
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

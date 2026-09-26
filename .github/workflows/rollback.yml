@@ -1,0 +1,54 @@
+# Redeploys an image that is already in the registry, to dev or production. Use it
+# to go back to the last good version after a bad deploy (for example when the alert
+# "Canvas components repeatedly fail to be created" fires straight after one):
+#
+#   Actions -> rollback -> Run workflow (from main), then choose the environment and
+#   the image tag to go back to.
+#
+# Nothing is rebuilt or retested: it is the same deploy steps and the same checks as
+# a normal deploy (deploy.yml), including the reviewer approval that production
+# requires, with the server pulling the tag you name. If the tag does not exist the
+# pull fails before anything running is touched.
+#
+# Finding the tag to go back to: the dashboard's "Versions reporting" table lists the
+# versions that have been running; every image the pipeline pushed is listed with
+#   aws ecr describe-images --repository-name design-canvas-buddy \
+#     --query 'sort_by(imageDetails,&imagePushedAt)[-8:].[imageTags[0],imagePushedAt]' --output table
+#
+# Note: the next push to main deploys the newest commit again, so fix or revert the
+# problem before merging anything else, or roll back once more.
+
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to roll back
+        required: true
+        type: choice
+        options: [dev, production]
+      image_tag:
+        description: Image tag to go back to (YYYYMMDD-HHMMSS-shortsha)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll ${{ inputs.environment }} back to ${{ inputs.image_tag }}
+    # Deploys must be started from main, like every other deploy.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.environment }}
+      image_tag: ${{ inputs.image_tag }}
+    permissions:
+      id-token: write
+      contents: read
+    # The same lock the pipeline's deploy of this environment takes.
+    concurrency:
+      group: deploy-${{ inputs.environment == 'production' && 'production' || 'dev' }}
+      cancel-in-progress: false

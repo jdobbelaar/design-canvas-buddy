@@ -132,6 +132,92 @@ production server ┘                                        └─ collector ->
 - **Rotating the token:** change the `ingest-token` secret, then redeploy the
   observability stack and both applications (any push does the applications).
 
+## Alerting
+
+One alert is provisioned, in `grafana/provisioning/alerting/rules.yaml`:
+**Canvas components repeatedly fail to be created.**
+
+| | |
+|---|---|
+| **Fires when** | at least **3** component creations failed in the last 10 minutes **and** at least **5%** of creation attempts failed, on every check for **5 minutes** |
+| **Checked** | every minute, separately for each service, environment, and deployed version |
+| **Clears** | 5 minutes after the condition stops (so a flapping problem is one alert) |
+| **Severity / owner** | `critical` / `jdobbelaar` (change `owner` in the rule) |
+
+Why those numbers: a component that fails to be created is a real loss for the people
+in the room, because it may not be saved or shown to the other participant, and
+normal is zero failures. But one failure is a glitch, and a percentage of a handful of
+attempts means nothing. So the alert needs both several failures (3) and a noticeable
+share (5%), and it must persist (5 minutes), which filters bursts that clear on their
+own while still reaching the owner within a few minutes, well inside a typical
+interview. Data that disappears (a deploy replaces the version) counts as recovered.
+
+Every alert carries: `service`, `environment`, `version`, and `owner` as labels, and
+as annotations a `summary`, a `description` with the numbers, the user `impact`, a
+`dashboard_url` (opens the dashboard already filtered to that environment and version,
+last hour), a `runbook_url` (the section below), and short `what_to_do` steps. The
+dashboard's **Component creation failures by reason** panel is where it points.
+
+### Sending alerts somewhere
+
+Alerts are evaluated and shown in Grafana (Alerting -> Alert rules), but **no delivery
+channel is configured yet**: Grafana's built-in default has no address, so nothing is
+sent. To deliver them, add two provisioning files next to `rules.yaml`, for example
+for Slack (create an incoming webhook in Slack first):
+
+```yaml
+# grafana/provisioning/alerting/contact-points.yaml
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: slack-owners
+    receivers:
+      - uid: slack-owners
+        type: slack
+        settings:
+          url: <the webhook URL>   # on AWS, keep the URL in Secrets Manager rather than in git
+```
+
+```yaml
+# grafana/provisioning/alerting/policies.yaml
+apiVersion: 1
+policies:
+  - orgId: 1
+    receiver: slack-owners
+    group_by: [alertname, environment]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+```
+
+(A policy may only name a contact point that exists, and Grafana will not start if a
+provisioning file is wrong, which is why these are not shipped half-configured.)
+
+### Responding to component-creation failures
+
+1. **Open the `dashboard_url` from the alert.** It is already filtered to the
+   environment and version. Look at **Component creation failures by reason**.
+2. **Did it start when the version changed?** The Version selector and the
+   "Versions reporting" table show what is running and when a version appeared. If the
+   failures began with a new version, go to step 3. If not, go to step 4.
+3. **Roll back.** Run the **rollback** workflow (Actions -> rollback -> Run workflow),
+   choose the environment and the tag of the last good version (the command in its
+   header lists recent tags). Production asks for your approval, like a normal deploy.
+   Then fix or revert the change before pushing anything else, since the next push to
+   `main` deploys the newest commit again.
+4. **Find the cause by reason:**
+   - `error`: the server failed while saving. Check `/health` (is the database up?),
+     then the **Logs** panel and the **Recent traces** panel for errors at the time the
+     failures began.
+   - `invalid`: the browser sent something the server does not accept. This is usually
+     the browser and server being on different versions (someone with an old page open
+     after a deploy, or a real contract change). Compare the request that fails with
+     `openapi.yaml`.
+   - `id_conflict`: a component's id already belongs to another room. Ids are meant to
+     be unique, so look for a client reusing ids (a bug), not a server problem.
+5. **Confirm it recovered:** the failures panel stops climbing, and the alert clears
+   about 10 minutes later (its window) plus 5 minutes.
+
 ## Things to know
 
 - Data is kept for 7 days, in the named volumes `prometheus-data`, `loki-data`,

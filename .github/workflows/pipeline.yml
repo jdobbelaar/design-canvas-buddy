@@ -125,6 +125,24 @@ jobs:
             otel/opentelemetry-collector:0.161.0 validate --config=/etc/otelcol/config.yaml
           docker run --rm -e INGEST_TOKEN=ci -v "$PWD/observability/otel-collector/config.aws.yaml:/etc/otelcol/config.yaml:ro" \
             otel/opentelemetry-collector-contrib:0.161.0 validate --config=/etc/otelcol/config.yaml
+      # Grafana refuses to start at all if a provisioning file is wrong (an alert
+      # rule, a contact point, a policy naming a receiver that does not exist), which
+      # would take monitoring down on the next deploy. Start it with the real files.
+      - name: Grafana starts with its provisioning
+        run: |
+          image=$(docker compose -f observability/docker-compose.yaml config --images | grep grafana/grafana)
+          docker run -d --name grafana-check -p 13000:3000             -e GF_AUTH_ANONYMOUS_ENABLED=true -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin             -v "$PWD/observability/grafana/provisioning:/etc/grafana/provisioning:ro"             -v "$PWD/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro"             "$image"
+          for _ in $(seq 1 60); do
+            curl -fsS http://localhost:13000/api/health > /dev/null 2>&1 && break
+            sleep 2
+          done
+          if ! curl -fsS http://localhost:13000/api/health > /dev/null 2>&1; then
+            echo "::error::Grafana did not start with these provisioning files"
+            docker logs grafana-check 2>&1 | grep -E "Error: |failure: " | tail -3
+            exit 1
+          fi
+          curl -fsS http://localhost:13000/api/v1/provisioning/alert-rules/canvas-creation-failures > /dev/null             || { echo "::error::the alert rule was not loaded"; exit 1; }
+          curl -fsS http://localhost:13000/api/dashboards/uid/design-canvas-buddy > /dev/null             || { echo "::error::the dashboard was not loaded"; exit 1; }
 
   # The image every later stage uses, built exactly once. Its tag is
   # YYYYMMDD-HHMMSS-shortsha (UTC build time, then the commit).

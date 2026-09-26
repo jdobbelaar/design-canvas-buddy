@@ -31,5 +31,6 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       GF_SECURITY_COOKIE_SECURE: "true"
-      # The public HTTPS address (CloudFront), for links Grafana generates.
+      # The public HTTPS address (CloudFront), for links Grafana generates, such as
+      # the dashboard link in alerts. Required here rather than defaulted.
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?GRAFANA_ROOT_URL must be set}

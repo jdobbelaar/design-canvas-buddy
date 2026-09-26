@@ -6,7 +6,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -323,6 +323,60 @@
       }
     },
     {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Component creation failures by reason",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Elements that could not be created, by why. `error`: the server failed. `invalid`: a message did not validate (often the browser and server disagreeing after a deploy). `id_conflict`: the element's id belongs to another room. The alert \"Canvas components repeatedly fail to be created\" fires on these.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{reason}}",
+          "expr": "sum by (reason) (increase(canvas_element_creation_failures_total{deployment_environment_name=~\"$environment\", service_version=~\"$version\"}[$__rate_interval]))"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
       "id": 4,
       "type": "timeseries",
       "title": "Requests per second by status",
@@ -334,7 +388,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 21
       },
       "targets": [
         {
@@ -370,7 +424,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 21
       },
       "targets": [
         {
@@ -424,7 +478,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 29
       },
       "targets": [
         {
@@ -453,7 +507,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 38
       },
       "options": {
         "showTime": true,

@@ -1,0 +1,108 @@
+apiVersion: 1
+
+# The dashboard link in dashboard_url is built from Grafana's own public address
+# (`externalURL`, i.e. its root_url setting), so it is right locally and on AWS.
+
+groups:
+  - orgId: 1
+    name: design-canvas-buddy
+    folder: Design Canvas Buddy
+    interval: 1m
+    rules:
+      - uid: canvas-creation-failures
+        title: Canvas components repeatedly fail to be created
+        # THRESHOLD is 1 when the condition holds and 0 when it does not.
+        condition: THRESHOLD
+        data:
+          # Failed creations in the last 10 minutes, per service, environment, and
+          # version. (Counters start at zero when the app starts, so these series
+          # exist from the first minute: see backend/app/telemetry.py.)
+          - refId: FAILURES
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: >-
+                label_replace(label_replace(label_replace(
+                sum by (job, deployment_environment_name, service_version) (increase(canvas_element_creation_failures_total[10m])),
+                "service", "$1", "job", "(.*)"),
+                "environment", "$1", "deployment_environment_name", "(.*)"),
+                "version", "$1", "service_version", "(.*)")
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: FAILURES
+          # Components created successfully in the same window.
+          - refId: CREATED
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: >-
+                label_replace(label_replace(label_replace(
+                sum by (job, deployment_environment_name, service_version) (increase(canvas_elements_created_total[10m])),
+                "service", "$1", "job", "(.*)"),
+                "environment", "$1", "deployment_environment_name", "(.*)"),
+                "version", "$1", "service_version", "(.*)")
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: CREATED
+          # The share of creation attempts that failed.
+          - refId: RATIO
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              type: math
+              expression: $FAILURES / ($FAILURES + $CREATED)
+              refId: RATIO
+          # Real user impact means BOTH: several failures (one is a glitch, and a
+          # tiny number of attempts makes any percentage meaningless) AND a
+          # noticeable share of attempts failing (a busy room can hit a few failures
+          # while working fine). Normal is zero failures.
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              datasource: { type: __expr__, uid: __expr__ }
+              type: math
+              expression: $FAILURES >= 3 && $RATIO >= 0.05
+              refId: THRESHOLD
+        # A deploy replaces the version label: the old version's series go quiet,
+        # which is a recovery, not a problem.
+        noDataState: OK
+        execErrState: Error
+        # The condition must hold on every evaluation for 5 minutes, so a burst
+        # that clears is not reported, and it stays firing for 5 minutes after it
+        # stops so a flapping problem is one alert, not many.
+        for: 5m
+        keepFiringFor: 5m
+        # `service`, `environment`, and `version` come from the query above (every
+        # alert instance carries them); these two are fixed.
+        labels:
+          # Who is responsible for acting on this.
+          owner: jdobbelaar
+          severity: critical
+        annotations:
+          summary: 'Canvas components repeatedly fail to be created: {{ $labels.service }} / {{ $labels.environment }} / {{ $labels.version }}'
+          description: >-
+            {{ printf "%.0f" $values.FAILURES.Value }} component creations failed in the last 10 minutes
+            ({{ humanizePercentage $values.RATIO.Value }} of attempts), and it has been like this for at
+            least 5 minutes. Service: {{ $labels.service }}. Environment: {{ $labels.environment }}.
+            Deployed version: {{ $labels.version }}. Owner: jdobbelaar.
+          impact: >-
+            Users adding a component (a shape, text, or connector) see it on their own
+            screen, but it may not be saved or shown to the other participant, so an
+            interview in progress loses work and the two people see different diagrams.
+          dashboard_url: '{{ externalURL }}d/design-canvas-buddy?orgId=1&var-environment={{ $labels.environment }}&var-version={{ $labels.version }}&from=now-1h&to=now'
+          runbook_url: https://github.com/jdobbelaar/design-canvas-buddy/blob/main/observability/README.md#responding-to-component-creation-failures
+          what_to_do: >-
+            1. Open dashboard_url and look at "Component creation failures by reason".
+            2. If it began when the version changed, roll back (runbook_url, step 3).
+            3. Otherwise follow the runbook by reason: error, invalid, or id_conflict.
+          # Grafana shows this alert on that panel of that dashboard.
+          __dashboardUid__: design-canvas-buddy
+          __panelId__: '9'
