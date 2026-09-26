@@ -43,6 +43,7 @@ jobs:
     env:
       STACK_NAME: ${{ vars.STACK_NAME }}
       IMAGE_NAME: design-canvas-buddy
+      OBSERVABILITY_STACK: ${{ vars.OBSERVABILITY_STACK || 'design-canvas-buddy-observability' }}
     steps:
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -78,13 +79,23 @@ jobs:
           IMAGE="$account.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:$TAG"
           echo "Deploying $IMAGE (commit $SHA) to $INSTANCE_ID"
 
+          # Where to send telemetry: the public endpoint of the observability stack,
+          # if that stack exists and this role may read it. Never a reason to fail
+          # a deploy; the server also falls back to no telemetry on its own.
+          OTLP=$(aws cloudformation describe-stacks --stack-name "$OBSERVABILITY_STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='OtlpEndpoint'].OutputValue" --output text 2>/dev/null || true)
+          if [[ ! "$OTLP" =~ ^https://[a-z0-9]+\.cloudfront\.net$ ]]; then
+            echo "::notice::no observability endpoint found (stack $OBSERVABILITY_STACK); deploying without telemetry"
+            OTLP=""
+          fi
+
           cat > commands.json <<EOF
           {"commands": [
             "set -eu",
             "cd /opt/app",
             "git fetch --quiet origin $SHA",
             "git checkout --quiet --force $SHA",
-            "APP_IMAGE=$IMAGE APP_VERSION=$TAG APP_ENVIRONMENT=$ENVIRONMENT bash deploy/aws/deploy.sh"
+            "APP_IMAGE=$IMAGE APP_VERSION=$TAG APP_ENVIRONMENT=$ENVIRONMENT OTEL_EXPORTER_OTLP_ENDPOINT=$OTLP bash deploy/aws/deploy.sh"
           ]}
           EOF
 

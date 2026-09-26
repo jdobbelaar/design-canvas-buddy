@@ -1,0 +1,35 @@
+# What changes when the stack runs on AWS (deploy/aws/observability.yaml) instead of
+# on a laptop. Used together with the base file:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.aws.yaml up -d
+#
+# Locally the stack trusts anyone who can reach it (loopback only). On AWS it is
+# reachable from the internet through CloudFront, so:
+#   - Grafana requires a login (no anonymous access, no sign-up)
+#   - the collector accepts telemetry only with the shared bearer token, and only
+#     over HTTP (the gRPC receiver is not enabled)
+#
+# Required in .env next to this file (written by deploy/aws/deploy-observability.sh
+# from AWS Secrets Manager; never committed):
+#   GRAFANA_ADMIN_PASSWORD   INGEST_TOKEN   GRAFANA_ROOT_URL
+#   GRAFANA_BIND=0.0.0.0     OTLP_HTTP_BIND=0.0.0.0   (Prometheus, Loki, and Tempo stay loopback-only)
+
+services:
+  otel-collector:
+    # The core collector has no authentication extension; contrib does.
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    volumes:
+      - ./otel-collector/config.aws.yaml:/etc/otelcol/config.yaml:ro
+    environment:
+      INGEST_TOKEN: ${INGEST_TOKEN:?INGEST_TOKEN must be set}
+
+  grafana:
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      GF_SECURITY_COOKIE_SECURE: "true"
+      # The public HTTPS address (CloudFront), for links Grafana generates.
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:?GRAFANA_ROOT_URL must be set}

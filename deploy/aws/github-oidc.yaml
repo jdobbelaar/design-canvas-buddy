@@ -34,6 +34,20 @@ Description: >-
 # variables AWS_DEPLOY_ROLE_ARN (this stack's DeployRoleArn output) and STACK_NAME.
 
 Parameters:
+  ObservabilityStackName:
+    Type: String
+    Default: design-canvas-buddy-observability
+    Description: >-
+      The observability stack (observability.yaml). The deploy role reads its
+      OtlpEndpoint output so the application can be pointed at it.
+
+  IngestTokenSecretName:
+    Type: String
+    Default: design-canvas-buddy/observability/ingest-token
+    Description: >-
+      The Secrets Manager secret (created by observability.yaml) holding the bearer
+      token applications present to send telemetry. The server reads it at deploy time.
+
   RepositoryName:
     Type: String
     Default: design-canvas-buddy
@@ -121,7 +135,9 @@ Resources:
               - Sid: ReadStackOutputs
                 Effect: Allow
                 Action: cloudformation:DescribeStacks
-                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ObservabilityStackName}/*
               - Sid: CheckTheImageExists
                 Effect: Allow
                 Action: ecr:DescribeImages
@@ -175,6 +191,15 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:BatchCheckLayerAvailability
                 Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${RepositoryName}
+        # ...and reads the token that lets it send telemetry to the observability
+        # stack. Only that one secret (the ARN ends in a random suffix).
+        - PolicyName: read-ingest-token
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${IngestTokenSecretName}-*
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile

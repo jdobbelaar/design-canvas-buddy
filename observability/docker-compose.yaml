@@ -14,9 +14,13 @@
 #   GRAFANA_PORT (3000)  PROMETHEUS_PORT (9090)  LOKI_PORT (3100)  TEMPO_PORT (3200)
 #   OTLP_HTTP_PORT (4318)  OTLP_GRPC_PORT (4317)
 #   BIND_ADDRESS (127.0.0.1)   set to 0.0.0.0 to accept telemetry from other machines
+#   GRAFANA_BIND, OTLP_HTTP_BIND, OTLP_GRPC_BIND   the same, for just that one port
+#                              (the AWS deployment opens only Grafana and OTLP/HTTP)
 #
 # Everything is published on the loopback address only by default: Grafana here
 # runs without a login, and the collector accepts data from anyone who can reach it.
+# The AWS deployment adds docker-compose.aws.yaml, which turns on a Grafana login
+# and requires a token to send telemetry; see README.md.
 
 name: observability
 
@@ -28,8 +32,8 @@ services:
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OTLP_GRPC_PORT:-4317}:4317"
-      - "${BIND_ADDRESS:-127.0.0.1}:${OTLP_HTTP_PORT:-4318}:4318"
+      - "${OTLP_GRPC_BIND:-${BIND_ADDRESS:-127.0.0.1}}:${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_BIND:-${BIND_ADDRESS:-127.0.0.1}}:${OTLP_HTTP_PORT:-4318}:4318"
     depends_on:
       - tempo
       - prometheus
@@ -91,7 +95,7 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+      - "${GRAFANA_BIND:-${BIND_ADDRESS:-127.0.0.1}}:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
       - loki

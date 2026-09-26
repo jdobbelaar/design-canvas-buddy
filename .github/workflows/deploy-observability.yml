@@ -1,0 +1,129 @@
+# Deploys the observability stack (observability/) to its own server, separately
+# from the application pipeline. Runs when anything under observability/ changes on
+# main, and on demand (Actions -> deploy observability -> Run workflow); the very
+# first start, right after the stack is created, is one of those on-demand runs.
+#
+# The GitHub environment "observability" supplies:
+#   AWS_DEPLOY_ROLE_ARN   the role to assume (only this environment's tokens are
+#                         accepted; see deploy/aws/observability.yaml)
+#   STACK_NAME            the CloudFormation stack that holds the server
+#
+# The server starts the stack with deploy/aws/deploy-observability.sh, which reads
+# the two secrets itself; nothing secret passes through GitHub.
+
+name: deploy observability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - observability/**
+      - deploy/aws/deploy-observability.sh
+      - .github/workflows/deploy-observability.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one half-way through.
+concurrency:
+  group: deploy-observability
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  deploy:
+    name: Deploy the observability stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: observability
+    permissions:
+      id-token: write # request the OIDC token exchanged for AWS credentials
+      contents: read
+    env:
+      STACK_NAME: ${{ vars.STACK_NAME }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-observability-${{ github.run_id }}
+
+      - name: Look up the server and its public address
+        id: stack
+        run: |
+          outputs=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' --output json)
+          echo "instance_id=$(jq -r '.[] | select(.OutputKey=="InstanceId").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
+          echo "url=$(jq -r '.[] | select(.OutputKey=="GrafanaUrl").OutputValue' <<<"$outputs")" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy on the server (AWS Systems Manager)
+        env:
+          INSTANCE_ID: ${{ steps.stack.outputs.instance_id }}
+          GRAFANA_URL: ${{ steps.stack.outputs.url }}
+          SHA: ${{ github.sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected commit id: $SHA"; exit 1; }
+          [[ "$INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]] || { echo "unexpected instance id: $INSTANCE_ID"; exit 1; }
+          [[ "$GRAFANA_URL" =~ ^https://[a-z0-9]+\.cloudfront\.net$ ]] || { echo "unexpected address: $GRAFANA_URL"; exit 1; }
+
+          # Check out exactly this commit on the server, then run the script it ships with.
+          cat > commands.json <<EOF
+          {"commands": [
+            "set -eu",
+            "cd /opt/observability",
+            "git fetch --quiet origin $SHA",
+            "git checkout --quiet --force $SHA",
+            "AWS_REGION=$AWS_REGION GRAFANA_ROOT_URL=$GRAFANA_URL bash deploy/aws/deploy-observability.sh"
+          ]}
+          EOF
+
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy observability $SHA" \
+            --timeout-seconds 900 \
+            --parameters file://commands.json \
+            --query Command.CommandId --output text)
+          echo "SSM command: $command_id"
+
+          status=Pending
+          for _ in $(seq 1 90); do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)
+            echo "status: $status"
+            case "$status" in Success|Failed|Cancelled|TimedOut|Cancelling) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '{stdout: StandardOutputContent, stderr: StandardErrorContent}' --output json \
+            | jq -r '"----- stdout -----", .stdout, "----- stderr -----", .stderr'
+          [ "$status" = Success ] || { echo "::error::deploy command finished as $status"; exit 1; }
+
+      # The server checked itself. This checks what the internet sees, through
+      # CloudFront: Grafana is up and asks for a login, and telemetry is refused
+      # without the token.
+      - name: Verify the public endpoints
+        env:
+          URL: ${{ steps.stack.outputs.url }}
+        run: |
+          for attempt in $(seq 1 30); do
+            health=$(curl -sS --max-time 10 "$URL/api/health" || true)
+            echo "attempt $attempt: ${health:-<no response>}"
+            jq -e '.database == "ok"' <<<"$health" > /dev/null 2>&1 && break
+            [ "$attempt" = 30 ] && { echo "::error::Grafana never became healthy at $URL"; exit 1; }
+            sleep 10
+          done
+
+          anonymous=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$URL/api/search")
+          [ "$anonymous" = 401 ] || { echo "::error::Grafana answered $anonymous to an anonymous request (expected 401)"; exit 1; }
+
+          untokened=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X POST "$URL/v1/traces" \
+            -H 'Content-Type: application/json' -d '{}')
+          [ "$untokened" = 401 ] || { echo "::error::the collector answered $untokened to telemetry without a token (expected 401)"; exit 1; }
+
+          echo "Grafana is at $URL (login required), and telemetry needs the token."

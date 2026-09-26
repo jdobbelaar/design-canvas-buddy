@@ -5,7 +5,13 @@
 # here. Succeeds only if /health reports that exact image tag as running.
 #
 #   APP_IMAGE=<registry>/design-canvas-buddy:<tag> APP_VERSION=<tag> \
-#     APP_ENVIRONMENT=<dev|production> bash deploy/aws/deploy.sh
+#     APP_ENVIRONMENT=<dev|production> [OTEL_EXPORTER_OTLP_ENDPOINT=<https://...>] \
+#     bash deploy/aws/deploy.sh
+#
+# If OTEL_EXPORTER_OTLP_ENDPOINT is given, the app is set up to send its telemetry
+# there, authenticated with the token in Secrets Manager. Observability is a
+# separate stack: if it is absent or the token cannot be read, the app is deployed
+# without telemetry rather than failing.
 #
 # Postgres is left running: its data lives in a Docker volume and is untouched.
 # The app container is replaced, so open WebSockets drop for a few seconds and
@@ -45,8 +51,28 @@ set_env() {
   chmod --reference=.env .env.new
   mv .env.new .env
 }
+unset_env() {
+  grep -v "^$1=" .env > .env.new || true
+  chmod --reference=.env .env.new
+  mv .env.new .env
+}
 set_env APP_IMAGE "$APP_IMAGE"
 set_env APP_ENVIRONMENT "$APP_ENVIRONMENT"
+
+# Telemetry. The token is read with this server's role and goes only into .env
+# (never echoed). Its header value is percent-encoded, as the OpenTelemetry SDKs expect.
+otlp_endpoint=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+ingest_secret=${INGEST_TOKEN_SECRET:-design-canvas-buddy/observability/ingest-token}
+if [ -n "$otlp_endpoint" ] && ingest_token=$(aws secretsmanager get-secret-value \
+  --region "$region" --secret-id "$ingest_secret" --query SecretString --output text 2>/dev/null); then
+  set_env OTEL_EXPORTER_OTLP_ENDPOINT "$otlp_endpoint"
+  set_env OTEL_EXPORTER_OTLP_HEADERS "Authorization=Bearer%20$ingest_token"
+  echo "==> telemetry is sent to $otlp_endpoint"
+else
+  unset_env OTEL_EXPORTER_OTLP_ENDPOINT
+  unset_env OTEL_EXPORTER_OTLP_HEADERS
+  echo "==> no telemetry: no endpoint given, or the ingest token could not be read"
+fi
 
 export APP_IMAGE APP_ENVIRONMENT
 echo "==> pulling $APP_IMAGE"

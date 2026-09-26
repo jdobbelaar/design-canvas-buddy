@@ -107,18 +107,24 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: cfn-lint
-        run: uvx cfn-lint deploy/aws/cloudformation.yaml deploy/aws/github-oidc.yaml
+        run: uvx cfn-lint deploy/aws/cloudformation.yaml deploy/aws/github-oidc.yaml deploy/aws/registry.yaml deploy/aws/observability.yaml
       - name: shellcheck
-        run: shellcheck deploy/aws/deploy.sh
-      # The local observability stack: the Compose files parse, and the
-      # collector accepts its config (it rejects unknown components and typos).
+        run: shellcheck deploy/aws/deploy.sh deploy/aws/deploy-observability.sh
+      # The observability stack, locally and as deployed on AWS: the Compose files
+      # parse (the AWS one with dummy values for the secrets it requires), and the
+      # collector accepts each config (it rejects unknown components and typos).
       - name: Compose files
         run: |
           docker compose -f docker-compose.yaml config --quiet
           docker compose -f observability/docker-compose.yaml config --quiet
-      - name: OpenTelemetry Collector config
+          INGEST_TOKEN=ci GRAFANA_ADMIN_PASSWORD=ci GRAFANA_ROOT_URL=https://ci.example \
+            docker compose -f observability/docker-compose.yaml -f observability/docker-compose.aws.yaml config --quiet
+      - name: OpenTelemetry Collector configs
         run: |
-          docker run --rm -v "$PWD/observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro"             otel/opentelemetry-collector:0.161.0 validate --config=/etc/otelcol/config.yaml
+          docker run --rm -v "$PWD/observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector:0.161.0 validate --config=/etc/otelcol/config.yaml
+          docker run --rm -e INGEST_TOKEN=ci -v "$PWD/observability/otel-collector/config.aws.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.161.0 validate --config=/etc/otelcol/config.yaml
 
   # The image every later stage uses, built exactly once. Its tag is
   # YYYYMMDD-HHMMSS-shortsha (UTC build time, then the commit).
