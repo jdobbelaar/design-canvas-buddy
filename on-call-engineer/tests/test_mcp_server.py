@@ -21,6 +21,12 @@ EXPECTED_TOOLS = {
 }
 SERVER = Path(__file__).resolve().parent.parent / "mcp_server.py"
 
+# Built at run time on purpose: once this file is committed, a literal here would be found by
+# the very searches these tests run against the committed repository.
+MARKER = "NOT_COMMITTED_" + "MARKER_" + str(os.getpid())
+LEAK_FILE = "leaked-" + str(os.getpid()) + ".txt"
+OPTION_LOOKING = "--output=" + LEAK_FILE
+
 
 def rpc(method, params=None, ident=1):
     message = {"jsonrpc": "2.0", "id": ident, "method": method}
@@ -137,15 +143,15 @@ class TheRepositoryAsCommitted(unittest.TestCase):
 
     def test_files_that_are_not_committed_do_not_exist(self):
         junk = observe.REPO_ROOT / "observability" / ".env"
-        junk.write_text("SECRET=decoy\n", encoding="utf-8")
+        junk.write_text(MARKER + chr(10), encoding="utf-8")
         self.addCleanup(junk.unlink)
         for path in ("observability/.env", ".git/config"):
             text, is_error = self.call("repo_read", {"path": path})
             self.assertTrue(is_error, path)
-            self.assertNotIn("decoy", text)
+            self.assertNotIn(MARKER, text)
         text, _ = self.call("repo_files", {"path": "observability"})
         self.assertNotIn(".env\n", text + "\n")
-        text, _ = self.call("repo_search", {"pattern": "SECRET=decoy"})
+        text, _ = self.call("repo_search", {"pattern": MARKER})
         self.assertEqual(text, "no matches")
 
     def test_paths_cannot_leave_the_repository(self):
@@ -160,10 +166,10 @@ class TheRepositoryAsCommitted(unittest.TestCase):
         self.assertFalse(self.call("repo_read", {"path": "openapi.yaml", "ref": "HEAD"})[1])
 
     def test_a_search_pattern_cannot_be_an_option(self):
-        text, is_error = self.call("repo_search", {"pattern": "--output=leaked.txt"})
+        text, is_error = self.call("repo_search", {"pattern": OPTION_LOOKING})
         self.assertFalse(is_error)
         self.assertEqual(text, "no matches")
-        self.assertFalse((observe.REPO_ROOT / "leaked.txt").exists())
+        self.assertFalse((observe.REPO_ROOT / LEAK_FILE).exists())
 
     def test_search_finds_committed_text_and_limits_itself(self):
         text, _ = self.call("repo_search", {"pattern": "health", "path": "openapi.yaml"})
