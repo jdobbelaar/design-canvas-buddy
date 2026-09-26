@@ -144,6 +144,19 @@ jobs:
           curl -fsS http://localhost:13000/api/v1/provisioning/alert-rules/canvas-creation-failures > /dev/null             || { echo "::error::the alert rule was not loaded"; exit 1; }
           curl -fsS http://localhost:13000/api/dashboards/uid/design-canvas-buddy > /dev/null             || { echo "::error::the dashboard was not loaded"; exit 1; }
 
+  # The on-call engineer (on-call-engineer/): its tests use a fake Grafana and stub agents,
+  # so they need no network, no Claude Code, and spend nothing. Their checks that the agent
+  # can only see committed files use git, so this checks out the repository normally.
+  on-call-tests:
+    name: On-call engineer tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s on-call-engineer/tests
+
   # The image every later stage uses, built exactly once. Its tag is
   # YYYYMMDD-HHMMSS-shortsha (UTC build time, then the commit).
   build-image:
@@ -247,7 +260,7 @@ jobs:
   # ---- Stage 3: push the tested image to the registry (main only) -----------
   publish-image:
     name: Push image to ECR
-    needs: [build-image, integration-tests, e2e-tests]
+    needs: [build-image, integration-tests, e2e-tests, on-call-tests]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15

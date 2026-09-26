@@ -158,6 +158,11 @@ as annotations a `summary`, a `description` with the numbers, the user `impact`,
 last hour), a `runbook_url` (the section below), and short `what_to_do` steps. The
 dashboard's **Component creation failures by reason** panel is where it points.
 
+### Automatic first response
+
+`on-call-engineer/` polls these alerts every minute and, when one fires, hands it to a
+headless coding agent that investigates (read-only) and writes a report. See its README.
+
 ### Sending alerts somewhere
 
 Alerts are evaluated and shown in Grafana (Alerting -> Alert rules), but **no delivery

@@ -1,2 +1,7 @@
 # Local overrides for docker-compose.yaml (may contain a database password)
 .env
+
+# The on-call agent: its progress and the reports it writes
+on-call-engineer/.state/
+on-call-engineer/reports/
+__pycache__/
