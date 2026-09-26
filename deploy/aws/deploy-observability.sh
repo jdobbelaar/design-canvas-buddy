@@ -67,6 +67,10 @@ docker run --rm --entrypoint promtool \
 
 echo "==> starting"
 "${compose[@]}" up -d --remove-orphans
+# Grafana reads its alert rules, contact points, and policies only at startup, and
+# compose does not restart a container whose own settings did not change (only its
+# mounted files did), so restart it. Its data lives in a volume and is kept.
+"${compose[@]}" restart grafana
 
 wait_for() { # description, command...
   local what=$1
